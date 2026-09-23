@@ -1,4 +1,6 @@
 const https = require('https');
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
 require('dotenv').config();
 
 const token = (process.env.DISCORD_TOKEN || '').trim().replace(/^["']|["']$/g, '');
