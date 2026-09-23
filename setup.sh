@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  Custom VPS Discord Bot - Complete Server Host Setup Script
-#  Supports: Ubuntu 22.04 / 24.04 / Debian 12 / Debian 13
+#  Custom VPS Discord Bot - Universal Setup Script
+#  Supports: Containerized hosts, Docker, Ubuntu, Debian
 # ==============================================================================
 
 set -e
@@ -14,7 +14,7 @@ NC='\033[0m'
 
 echo -e "${BLUE}"
 echo "======================================================"
-echo "    🚀 CUSTOM VPS DISCORD BOT HOST INSTALLER"
+echo "    🚀 UNIVERSAL VPS DISCORD BOT HOST INSTALLER"
 echo "======================================================"
 echo -e "${NC}"
 
@@ -26,43 +26,36 @@ fi
 # 1. System packages
 echo -e "${YELLOW}[+] Updating system packages...${NC}"
 apt-get update -y
-apt-get install -y curl git snapd btrfs-progs sqlite3
+apt-get install -y curl git sqlite3 procps net-tools
 
-# Start snapd service if systemd is active
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl enable --now snapd.socket || true
-  systemctl start snapd.service || true
-  sleep 2
-elif command -v service >/dev/null 2>&1; then
-  service snapd start || true
-  sleep 2
+# 2. Setup Container Engine (Docker)
+if ! command -v docker >/dev/null 2>&1; then
+  echo -e "${YELLOW}[+] Installing Docker container engine...${NC}"
+  apt-get install -y docker.io || {
+    curl -fsSL https://get.docker.com | sh
+  }
 fi
 
-# 2. Node.js LTS setup
+# Start docker daemon using service if systemctl is not available
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl start docker || true
+elif command -v service >/dev/null 2>&1; then
+  service docker start || true
+elif [ -x /etc/init.d/docker ]; then
+  /etc/init.d/docker start || true
+fi
+
+# Pre-pull Ubuntu 24.04 image so VPS creation is instant
+echo -e "${YELLOW}[+] Pulling Ubuntu 24.04 base image (cache)...${NC}"
+docker pull ubuntu:24.04 || true
+
+# 3. Node.js LTS setup
 if ! command -v node >/dev/null 2>&1; then
   echo -e "${YELLOW}[+] Installing Node.js LTS...${NC}"
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs
 fi
 echo -e "${GREEN}[✓] Node.js $(node -v) installed.${NC}"
-
-# 3. LXD setup
-if ! command -v lxd >/dev/null 2>&1; then
-  echo -e "${YELLOW}[+] Installing LXD...${NC}"
-  # Ensure snap core is initialized
-  snap wait system seed.loaded || true
-  snap install lxd || {
-    echo -e "${YELLOW}[!] Retrying LXD install...${NC}"
-    systemctl restart snapd || true
-    sleep 3
-    snap install lxd
-  }
-fi
-
-export PATH="$PATH:/snap/bin"
-
-echo -e "${YELLOW}[+] Initializing LXD...${NC}"
-lxd init --auto || true
 
 # 4. Install npm dependencies
 echo -e "${YELLOW}[+] Installing Bot Dependencies...${NC}"
@@ -99,7 +92,6 @@ node deploy-commands.js
 echo -e "${YELLOW}[+] Starting Bot with PM2...${NC}"
 pm2 start index.js --name "vps-bot"
 pm2 save
-pm2 startup | tail -n 1 | bash || true
 
 echo -e "\n${GREEN}======================================================"
 echo " ✅ VPS Discord Bot is successfully installed and running!"

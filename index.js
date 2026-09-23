@@ -1,7 +1,7 @@
 const { Client, GatewayIntentBits, ActivityType, Collection } = require('discord.js');
 const config = require('./config');
 const db = require('./database');
-const lxd = require('./lxdManager');
+const container = require('./containerManager');
 const vpsCommand = require('./commands/vps');
 const adminCommand = require('./commands/admin');
 
@@ -23,7 +23,7 @@ client.commands.set(adminCommand.data.name, adminCommand);
 function updatePresence() {
   try {
     const all = db.getAllVPS();
-    const running = all.filter((v) => lxd.getInfo(v.containerName)?.status === 'Running').length;
+    const running = all.filter((v) => container.getInfo(v.containerName)?.status === 'Running').length;
     client.user.setPresence({
       status: 'online',
       activities: [

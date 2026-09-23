@@ -5,7 +5,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
 } = require('discord.js');
-const lxd = require('../lxdManager');
+const container = require('../containerManager');
 const db = require('../database');
 const config = require('../config');
 
@@ -129,7 +129,7 @@ module.exports = {
       await interaction.editReply({ embeds: [progressEmbed] });
 
       try {
-        const result = await lxd.createContainer({
+        const result = await container.createContainer({
           name: safeName,
           image: osImage,
           cpu: plan.cpu,
@@ -184,7 +184,7 @@ module.exports = {
         .setFooter({ text: config.hostingName });
 
       vpsList.forEach((v) => {
-        const live = lxd.getInfo(v.containerName);
+        const live = container.getInfo(v.containerName);
         const status = live ? live.status : 'Offline';
         const emoji = status === 'Running' ? '🟢' : '🔴';
         embed.addFields({
@@ -212,7 +212,7 @@ module.exports = {
 
     // 3. INFO
     if (sub === 'info') {
-      const live = lxd.getInfo(name);
+      const live = container.getInfo(name);
       const embed = new EmbedBuilder()
         .setColor(config.brandColor)
         .setTitle(`📊 VPS Info: ${name}`)
@@ -233,7 +233,7 @@ module.exports = {
     if (sub === 'terminal') {
       await interaction.deferReply({ ephemeral: true });
       try {
-        const link = await lxd.createWebTerminal(name);
+        const link = await container.createWebTerminal(name);
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setLabel('Open Web Terminal').setURL(link).setStyle(ButtonStyle.Link)
         );
@@ -253,7 +253,7 @@ module.exports = {
     // 5. START
     if (sub === 'start') {
       try {
-        lxd.start(name);
+        container.start(name);
         return interaction.reply({ content: `🟢 Started \`${name}\`.`, ephemeral: true });
       } catch (err) {
         return interaction.reply({ content: `❌ Failed to start: ${err.message}`, ephemeral: true });
@@ -263,7 +263,7 @@ module.exports = {
     // 6. STOP
     if (sub === 'stop') {
       try {
-        lxd.stop(name);
+        container.stop(name);
         return interaction.reply({ content: `🛑 Stopped \`${name}\`.`, ephemeral: true });
       } catch (err) {
         return interaction.reply({ content: `❌ Failed to stop: ${err.message}`, ephemeral: true });
@@ -273,7 +273,7 @@ module.exports = {
     // 7. RESTART
     if (sub === 'restart') {
       try {
-        lxd.restart(name);
+        container.restart(name);
         return interaction.reply({ content: `🔄 Restarted \`${name}\`.`, ephemeral: true });
       } catch (err) {
         return interaction.reply({ content: `❌ Failed to restart: ${err.message}`, ephemeral: true });
@@ -283,7 +283,7 @@ module.exports = {
     // 8. DELETE
     if (sub === 'delete') {
       try {
-        lxd.delete(name);
+        container.delete(name);
         db.removeVPS(name);
         return interaction.reply({ content: `🗑️ Permanently deleted \`${name}\`.`, ephemeral: true });
       } catch (err) {

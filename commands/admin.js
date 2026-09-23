@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
-const lxd = require('../lxdManager');
+const container = require('../containerManager');
 const db = require('../database');
 const config = require('../config');
 
@@ -43,7 +43,7 @@ module.exports = {
         .setFooter({ text: config.hostingName });
 
       allVPS.forEach((v) => {
-        const live = lxd.getInfo(v.containerName);
+        const live = container.getInfo(v.containerName);
         const status = live ? live.status : 'Missing / Stopped';
         embed.addFields({
           name: `${status === 'Running' ? '🟢' : '🔴'} ${v.containerName}`,
@@ -58,7 +58,7 @@ module.exports = {
     if (sub === 'force-delete') {
       const name = interaction.options.getString('name');
       try {
-        lxd.delete(name);
+        container.delete(name);
       } catch {}
       db.removeVPS(name);
       return interaction.reply({ content: `✅ Admin force-deleted \`${name}\`.`, ephemeral: true });
@@ -66,7 +66,7 @@ module.exports = {
 
     if (sub === 'node-stats') {
       const allVPS = db.getAllVPS();
-      const runningCount = allVPS.filter((v) => lxd.getInfo(v.containerName)?.status === 'Running').length;
+      const runningCount = allVPS.filter((v) => container.getInfo(v.containerName)?.status === 'Running').length;
 
       const embed = new EmbedBuilder()
         .setColor(config.brandColor)
