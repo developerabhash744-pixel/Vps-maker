@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 #  Custom VPS Discord Bot - Complete Server Host Setup Script
-#  Supports: Ubuntu 22.04 / 24.04 / Debian 12
+#  Supports: Ubuntu 22.04 / 24.04 / Debian 12 / Debian 13
 # ==============================================================================
 
 set -e
@@ -28,6 +28,16 @@ echo -e "${YELLOW}[+] Updating system packages...${NC}"
 apt-get update -y
 apt-get install -y curl git snapd btrfs-progs sqlite3
 
+# Start snapd service if systemd is active
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl enable --now snapd.socket || true
+  systemctl start snapd.service || true
+  sleep 2
+elif command -v service >/dev/null 2>&1; then
+  service snapd start || true
+  sleep 2
+fi
+
 # 2. Node.js LTS setup
 if ! command -v node >/dev/null 2>&1; then
   echo -e "${YELLOW}[+] Installing Node.js LTS...${NC}"
@@ -39,8 +49,17 @@ echo -e "${GREEN}[✓] Node.js $(node -v) installed.${NC}"
 # 3. LXD setup
 if ! command -v lxd >/dev/null 2>&1; then
   echo -e "${YELLOW}[+] Installing LXD...${NC}"
-  snap install lxd
+  # Ensure snap core is initialized
+  snap wait system seed.loaded || true
+  snap install lxd || {
+    echo -e "${YELLOW}[!] Retrying LXD install...${NC}"
+    systemctl restart snapd || true
+    sleep 3
+    snap install lxd
+  }
 fi
+
+export PATH="$PATH:/snap/bin"
 
 echo -e "${YELLOW}[+] Initializing LXD...${NC}"
 lxd init --auto || true
