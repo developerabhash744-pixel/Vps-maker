@@ -13,9 +13,15 @@ if (!config.token) {
   process.exit(1);
 }
 
-const client = new Client({
+const clientOptions = {
   intents: [GatewayIntentBits.Guilds],
-});
+};
+
+if (config.proxyUrl) {
+  clientOptions.rest = { api: `${config.proxyUrl}/api` };
+}
+
+const client = new Client(clientOptions);
 
 client.on('error', (err) => console.error('[Discord Client Error]:', err.message));
 client.on('shardError', (err) => console.warn('[Discord Shard Error]:', err.message));

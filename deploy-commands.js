@@ -12,7 +12,11 @@ if (!config.token || !config.clientId) {
 }
 
 const commands = [vpsCommand.data.toJSON(), adminCommand.data.toJSON()];
-const rest = new REST({ version: '10' }).setToken(config.token);
+const restOptions = { version: '10' };
+if (config.proxyUrl) {
+  restOptions.api = `${config.proxyUrl}/api`;
+}
+const rest = new REST(restOptions).setToken(config.token);
 
 (async () => {
   try {

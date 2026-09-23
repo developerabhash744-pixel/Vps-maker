@@ -4,16 +4,32 @@ dns.setDefaultResultOrder('ipv4first');
 require('dotenv').config();
 
 const token = (process.env.DISCORD_TOKEN || '').trim().replace(/^["']|["']$/g, '');
+const proxyUrl = (process.env.DISCORD_PROXY_URL || '').trim().replace(/^["']|["']$/g, '').replace(/\/+$/, '');
 
 console.log('Testing Discord Token...');
 console.log('Token length:', token.length);
-console.log('Token preview:', token.substring(0, 10) + '...' + token.substring(token.length - 5));
+console.log('Proxy URL:', proxyUrl || 'None (Direct)');
+
+let targetHostname = 'discord.com';
+let targetPort = 443;
+let targetPath = '/api/v10/users/@me';
+
+if (proxyUrl) {
+  try {
+    const parsed = new URL(proxyUrl);
+    targetHostname = parsed.hostname;
+    targetPort = parsed.port || (parsed.protocol === 'https:' ? 443 : 80);
+    targetPath = `${parsed.pathname.replace(/\/+$/, '')}/api/v10/users/@me`;
+  } catch (err) {
+    console.warn('Invalid proxy URL format, defaulting to discord.com');
+  }
+}
 
 const req = https.request(
   {
-    hostname: 'discord.com',
-    port: 443,
-    path: '/api/v10/users/@me',
+    hostname: targetHostname,
+    port: targetPort,
+    path: targetPath,
     method: 'GET',
     headers: {
       Authorization: `Bot ${token}`,
