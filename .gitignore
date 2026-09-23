@@ -1,0 +1,6 @@
+node_modules/
+.env
+vps_data.json
+*.tmp
+*.log
+.DS_Store
