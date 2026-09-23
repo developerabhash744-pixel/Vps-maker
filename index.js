@@ -11,8 +11,11 @@ if (!config.token) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  intents: [GatewayIntentBits.Guilds],
 });
+
+client.on('error', (err) => console.error('[Discord Client Error]:', err.message));
+client.on('shardError', (err) => console.warn('[Discord Shard Error]:', err.message));
 
 // Command registry
 client.commands = new Collection();

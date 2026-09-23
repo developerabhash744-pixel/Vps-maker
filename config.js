@@ -1,9 +1,9 @@
 require('dotenv').config();
 
 module.exports = {
-  token: process.env.DISCORD_TOKEN,
-  clientId: process.env.CLIENT_ID,
-  guildId: process.env.GUILD_ID,
+  token: (process.env.DISCORD_TOKEN || '').trim().replace(/^["']|["']$/g, ''),
+  clientId: (process.env.CLIENT_ID || '').trim().replace(/^["']|["']$/g, ''),
+  guildId: (process.env.GUILD_ID || '').trim().replace(/^["']|["']$/g, '') || null,
   adminIds: (process.env.ADMIN_IDS || '').split(',').map((id) => id.trim()).filter(Boolean),
   hostingName: process.env.HOSTING_NAME || 'NovaCloud',
   brandColor: process.env.BRAND_COLOR || '#5865F2',
