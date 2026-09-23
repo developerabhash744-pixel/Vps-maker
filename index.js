@@ -55,7 +55,7 @@ client.once('ready', () => {
   console.log(`=========================================`);
   console.log(`🚀 ${config.hostingName} Bot is ONLINE!`);
   console.log(`🤖 Logged in as: ${client.user.tag}`);
-  console.log(`📦 LXD Backend: ${lxd.isAvailable() ? 'Connected' : 'Not detected'}`);
+  console.log(`📦 Container Backend: ${container.isAvailable() ? `${container.engine} (Connected)` : 'Not detected'}`);
   console.log(`=========================================`);
 
   updatePresence();
