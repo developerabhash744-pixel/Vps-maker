@@ -2,15 +2,32 @@ const { execSync, exec, spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const config = require('./config');
+const db = require('./database');
 
 class ContainerManager {
   constructor() {
     this.engine = this.detectEngine();
     this.cachedIP = null;
+    this.ensureHostTtyd();
   }
 
   run(command, options = {}) {
     return execSync(command, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], ...options });
+  }
+
+  ensureHostTtyd() {
+    try {
+      this.run('command -v ttyd');
+    } catch {
+      try {
+        const arch = this.run('uname -m').trim();
+        this.run(
+          `curl -fsSLo /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.${arch}" && chmod +x /usr/local/bin/ttyd`
+        );
+      } catch (e) {
+        console.warn('[Host ttyd install note]:', e.message);
+      }
+    }
   }
 
   detectEngine() {
@@ -47,7 +64,9 @@ class ContainerManager {
     if (config.serverIp) return config.serverIp;
     try {
       if (this.cachedIP) return this.cachedIP;
-      const ip = this.run('curl -s --connect-timeout 4 https://api.ipify.org || curl -s --connect-timeout 4 https://icanhazip.com || curl -s --connect-timeout 4 https://ifconfig.me').trim();
+      const ip = this.run(
+        'curl -s --connect-timeout 4 https://api.ipify.org || curl -s --connect-timeout 4 https://icanhazip.com || curl -s --connect-timeout 4 https://ifconfig.me'
+      ).trim();
       if (ip && /^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
         this.cachedIP = ip;
         return ip;
@@ -141,43 +160,38 @@ class ContainerManager {
     const webPort = this.getRandomPort(34001, 49000);
     const hostIp = this.getHostPublicIP();
 
+    this.ensureHostTtyd();
+
     if (this.engine === 'docker') {
       try {
         const memLimit = this.formatDockerMemory(ram);
         const cpuLimit = cpu || '1';
 
-        // 1. Launch container with exposed SSH and ttyd Web Terminal ports
+        // 1. Launch container with exposed SSH port
         this.run(
-          `docker run -d --name ${name} --hostname ${name} --dns 8.8.8.8 --dns 1.1.1.1 -p ${sshPort}:22 -p ${webPort}:7681 --memory="${memLimit}" --cpus="${cpuLimit}" ${targetImage} sleep infinity`
+          `docker run -d --name ${name} --hostname ${name} --dns 8.8.8.8 --dns 1.1.1.1 -p ${sshPort}:22 --memory="${memLimit}" --cpus="${cpuLimit}" ${targetImage} sleep infinity`
         );
 
         // 2. Set root password
         this.run(`docker exec ${name} bash -c "echo 'root:${rootPassword}' | chpasswd"`);
 
-        // 3. Install SSH server, tools, and native Web Terminal (ttyd)
+        // 3. Background SSH server setup
         const initScript = `
           apt-get update -y >/dev/null 2>&1
-          apt-get install -y openssh-server curl sudo procps net-tools ca-certificates ttyd >/dev/null 2>&1 || true
-          
-          if ! command -v ttyd >/dev/null 2>&1; then
-            ARCH=$(uname -m)
-            curl -fsSLo /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.\${ARCH}" >/dev/null 2>&1 || true
-            chmod +x /usr/local/bin/ttyd 2>/dev/null || true
-          fi
-
+          apt-get install -y openssh-server curl sudo procps net-tools ca-certificates >/dev/null 2>&1 || true
           mkdir -p /var/run/sshd
           sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config 2>/dev/null || true
           sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || true
           service ssh restart >/dev/null 2>&1 || /etc/init.d/ssh restart >/dev/null 2>&1 || true
-
-          # Start local web terminal daemon
-          pkill -f ttyd 2>/dev/null || true
-          nohup ttyd -p 7681 -c root:${rootPassword} -W bash >/tmp/.ttyd.log 2>&1 &
         `;
-
         exec(`docker exec ${name} bash -c "${initScript.replace(/\n/g, ' ')}"`);
 
-        // Create Cloudflare Tunnel for guaranteed universal HTTPS browser access
+        // 4. Start Host-level ttyd attached directly to this container's interactive shell
+        exec(
+          `nohup ttyd -p ${webPort} -i 127.0.0.1 -c root:${rootPassword} -W docker exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
+        );
+
+        // 5. Create Cloudflare Tunnel for universal HTTPS browser access
         let webTerminalUrl = await this.createCloudflareTunnel(name, webPort);
         if (!webTerminalUrl) {
           webTerminalUrl = this.getWebTerminalUrl(webPort);
@@ -218,7 +232,6 @@ class ContainerManager {
   start(name) {
     if (this.engine === 'docker') {
       this.run(`docker start ${name}`);
-      exec(`docker exec ${name} bash -c "pgrep ttyd >/dev/null || (nohup ttyd -p 7681 -W bash >/dev/null 2>&1 &)"`);
     } else {
       const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
       this.run(`${lxcBin} start ${name}`);
@@ -228,6 +241,7 @@ class ContainerManager {
   stop(name) {
     if (this.engine === 'docker') {
       this.run(`docker stop ${name}`);
+      exec(`pkill -f "ttyd.*${name}" 2>/dev/null || true`);
     } else {
       const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
       this.run(`${lxcBin} stop ${name} --force`);
@@ -246,6 +260,7 @@ class ContainerManager {
   delete(name) {
     if (this.engine === 'docker') {
       this.run(`docker rm -f ${name}`);
+      exec(`pkill -f "ttyd.*${name}" 2>/dev/null || true`);
       exec(`pkill -f "cloudflared.*${name}" 2>/dev/null || true`);
     } else {
       const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
@@ -263,7 +278,6 @@ class ContainerManager {
         const isRunning = data.State?.Running;
         const ip = data.NetworkSettings?.IPAddress || '127.0.0.1';
         const sshPort = data.HostConfig?.PortBindings?.['22/tcp']?.[0]?.HostPort || 'N/A';
-        const webPort = data.HostConfig?.PortBindings?.['7681/tcp']?.[0]?.HostPort || null;
         const hostIp = this.getHostPublicIP();
 
         return {
@@ -271,8 +285,6 @@ class ContainerManager {
           status: isRunning ? 'Running' : 'Stopped',
           ipv4: ip,
           sshPort,
-          webPort,
-          webTerminalUrl: this.getWebTerminalUrl(webPort),
           memoryUsage: isRunning ? 'Active' : 'Offline',
           engine: 'Docker',
         };
@@ -292,8 +304,6 @@ class ContainerManager {
           status: info.status,
           ipv4,
           sshPort: '22',
-          webPort: null,
-          webTerminalUrl: null,
           memoryUsage: info.state?.memory?.usage ? `${Math.round(info.state.memory.usage / 1024 / 1024)} MB` : 'N/A',
           engine: 'LXD',
         };
@@ -304,9 +314,9 @@ class ContainerManager {
   }
 
   async createWebTerminal(name) {
-    const info = this.getInfo(name);
-    if (info && info.webTerminalUrl) {
-      return info.webTerminalUrl;
+    const vps = db.getVPS(name);
+    if (vps && vps.webTerminalUrl) {
+      return vps.webTerminalUrl;
     }
     throw new Error('Web terminal is not configured for this container.');
   }
