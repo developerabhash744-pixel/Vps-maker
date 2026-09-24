@@ -5,6 +5,7 @@ module.exports = {
   clientId: (process.env.CLIENT_ID || '').trim().replace(/^["']|["']$/g, ''),
   guildId: (process.env.GUILD_ID || '').trim().replace(/^["']|["']$/g, '') || null,
   proxyUrl: (process.env.DISCORD_PROXY_URL || '').trim().replace(/^["']|["']$/g, '').replace(/\/+$/, ''),
+  serverIp: (process.env.SERVER_IP || '').trim().replace(/^["']|["']$/g, '') || null,
   adminIds: (process.env.ADMIN_IDS || '').split(',').map((id) => id.trim()).filter(Boolean),
   hostingName: process.env.HOSTING_NAME || 'NovaCloud',
   brandColor: process.env.BRAND_COLOR || '#5865F2',

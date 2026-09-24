@@ -1,6 +1,7 @@
 const { execSync, exec } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
+const config = require('./config');
 
 class ContainerManager {
   constructor() {
@@ -43,9 +44,10 @@ class ContainerManager {
   }
 
   getHostPublicIP() {
+    if (config.serverIp) return config.serverIp;
     try {
       if (this.cachedIP) return this.cachedIP;
-      const ip = this.run('curl -s --connect-timeout 4 https://api.ipify.org || curl -s --connect-timeout 4 https://ifconfig.me').trim();
+      const ip = this.run('curl -s --connect-timeout 4 https://api.ipify.org || curl -s --connect-timeout 4 https://icanhazip.com || curl -s --connect-timeout 4 https://ifconfig.me').trim();
       if (ip && /^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
         this.cachedIP = ip;
         return ip;
