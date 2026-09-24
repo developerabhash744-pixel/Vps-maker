@@ -86,15 +86,11 @@ class ContainerManager {
 
   getWebTerminalUrl(webPort) {
     if (!webPort) return null;
-    if (config.daytonaProxy) {
-      const baseDomain = config.daytonaProxy.replace(/^\d+-/, '').replace(/\/+$/, '');
-      return `https://${webPort}-${baseDomain}/`;
-    }
     const hostIp = this.getHostPublicIP();
     return `http://${hostIp}:${webPort}`;
   }
 
-  // Create free Cloudflare Quick Tunnel for the container's web terminal
+  // Create free Cloudflare Quick Tunnel for guaranteed global HTTPS web terminal
   async createCloudflareTunnel(name, webPort) {
     return new Promise((resolve) => {
       const script = `
@@ -112,7 +108,7 @@ class ContainerManager {
         rm -f /tmp/cf_${name}.log
         nohup cloudflared tunnel --url http://127.0.0.1:${webPort} > /tmp/cf_${name}.log 2>&1 &
         
-        for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        for i in $(seq 1 15); do
           sleep 1
           URL=$(grep -o 'https://[-a-zA-Z0-9]*\\.trycloudflare\\.com' /tmp/cf_${name}.log 2>/dev/null | head -n 1)
           if [ -n "$URL" ]; then
@@ -120,13 +116,17 @@ class ContainerManager {
             exit 0
           fi
         done
+        cat /tmp/cf_${name}.log 2>/dev/null
       `;
 
-      exec(script, { timeout: 25000 }, (err, stdout) => {
-        const matched = (stdout || '').trim().match(/https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/);
+      exec(script, { timeout: 30000 }, (err, stdout) => {
+        const output = (stdout || '').trim();
+        const matched = output.match(/https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/);
         if (matched && matched[0]) {
+          console.log(`[Cloudflare Tunnel Created for ${name}]: ${matched[0]}`);
           resolve(matched[0]);
         } else {
+          console.warn(`[Cloudflare Tunnel Log for ${name}]:`, output);
           resolve(null);
         }
       });
