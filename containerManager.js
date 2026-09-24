@@ -66,7 +66,7 @@ class ContainerManager {
     return password;
   }
 
-  getRandomPort(min = 20000, max = 35000) {
+  getRandomPort(min = 20000, max = 34000) {
     return Math.floor(Math.random() * (max - min) + min);
   }
 
@@ -87,12 +87,50 @@ class ContainerManager {
   getWebTerminalUrl(webPort) {
     if (!webPort) return null;
     if (config.daytonaProxy) {
-      // Clean base domain (strip any leading port e.g. "22222-")
       const baseDomain = config.daytonaProxy.replace(/^\d+-/, '').replace(/\/+$/, '');
       return `https://${webPort}-${baseDomain}/`;
     }
     const hostIp = this.getHostPublicIP();
     return `http://${hostIp}:${webPort}`;
+  }
+
+  // Create free Cloudflare Quick Tunnel for the container's web terminal
+  async createCloudflareTunnel(name, webPort) {
+    return new Promise((resolve) => {
+      const script = `
+        if ! command -v cloudflared >/dev/null 2>&1; then
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+            curl -fsSLo /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 >/dev/null 2>&1 || true
+          else
+            curl -fsSLo /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 >/dev/null 2>&1 || true
+          fi
+          chmod +x /usr/local/bin/cloudflared 2>/dev/null || true
+        fi
+
+        pkill -f "cloudflared tunnel --url http://127.0.0.1:${webPort}" 2>/dev/null || true
+        rm -f /tmp/cf_${name}.log
+        nohup cloudflared tunnel --url http://127.0.0.1:${webPort} > /tmp/cf_${name}.log 2>&1 &
+        
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+          sleep 1
+          URL=$(grep -o 'https://[-a-zA-Z0-9]*\\.trycloudflare\\.com' /tmp/cf_${name}.log 2>/dev/null | head -n 1)
+          if [ -n "$URL" ]; then
+            echo "$URL"
+            exit 0
+          fi
+        done
+      `;
+
+      exec(script, { timeout: 25000 }, (err, stdout) => {
+        const matched = (stdout || '').trim().match(/https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/);
+        if (matched && matched[0]) {
+          resolve(matched[0]);
+        } else {
+          resolve(null);
+        }
+      });
+    });
   }
 
   async createContainer({ name, image, cpu, ram }) {
@@ -120,7 +158,6 @@ class ContainerManager {
           apt-get update -y >/dev/null 2>&1
           apt-get install -y openssh-server curl sudo procps net-tools ca-certificates ttyd >/dev/null 2>&1 || true
           
-          # Fallback: install static ttyd if package repo didn't have it
           if ! command -v ttyd >/dev/null 2>&1; then
             ARCH=$(uname -m)
             curl -fsSLo /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.\${ARCH}" >/dev/null 2>&1 || true
@@ -139,7 +176,11 @@ class ContainerManager {
 
         exec(`docker exec ${name} bash -c "${initScript.replace(/\n/g, ' ')}"`);
 
-        const webTerminalUrl = this.getWebTerminalUrl(webPort);
+        // Create Cloudflare Tunnel for guaranteed universal HTTPS browser access
+        let webTerminalUrl = await this.createCloudflareTunnel(name, webPort);
+        if (!webTerminalUrl) {
+          webTerminalUrl = this.getWebTerminalUrl(webPort);
+        }
 
         return {
           success: true,
@@ -176,7 +217,6 @@ class ContainerManager {
   start(name) {
     if (this.engine === 'docker') {
       this.run(`docker start ${name}`);
-      // Ensure ttyd is running upon container start
       exec(`docker exec ${name} bash -c "pgrep ttyd >/dev/null || (nohup ttyd -p 7681 -W bash >/dev/null 2>&1 &)"`);
     } else {
       const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
@@ -205,6 +245,7 @@ class ContainerManager {
   delete(name) {
     if (this.engine === 'docker') {
       this.run(`docker rm -f ${name}`);
+      exec(`pkill -f "cloudflared.*${name}" 2>/dev/null || true`);
     } else {
       const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
       this.run(`${lxcBin} delete -f ${name}`);
