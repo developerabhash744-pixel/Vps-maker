@@ -112,44 +112,39 @@ class ContainerManager {
   // Create free Cloudflare Quick Tunnel for guaranteed global HTTPS web terminal
   async createCloudflareTunnel(name, webPort) {
     return new Promise((resolve) => {
-      console.log(`[Cloudflare Tunnel] Starting quick tunnel for ${name} on port ${webPort}...`);
+      console.log(`[Cloudflare Tunnel] Launching persistent daemon for ${name} on port ${webPort}...`);
+      const logFile = `/tmp/cf_${name}.log`;
 
-      const proc = spawn('cloudflared', ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${webPort}`], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      try {
+        if (fs.existsSync(logFile)) fs.unlinkSync(logFile);
+      } catch {}
 
-      let resolved = false;
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          console.warn(`[Cloudflare Tunnel for ${name} timed out after 18s]`);
+      // Launch independent background daemon that persists 24/7
+      exec(
+        `nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:${webPort} > ${logFile} 2>&1 &`
+      );
+
+      let attempts = 0;
+      const interval = setInterval(() => {
+        attempts++;
+        try {
+          if (fs.existsSync(logFile)) {
+            const content = fs.readFileSync(logFile, 'utf8');
+            const match = content.match(/https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/);
+            if (match && match[0]) {
+              clearInterval(interval);
+              console.log(`[Cloudflare Tunnel Active for ${name}]: ${match[0]}`);
+              return resolve(match[0]);
+            }
+          }
+        } catch {}
+
+        if (attempts >= 20) {
+          clearInterval(interval);
+          console.warn(`[Cloudflare Tunnel for ${name} timed out after 20s]`);
           resolve(null);
         }
-      }, 18000);
-
-      const checkOutput = (data) => {
-        const text = data.toString();
-        const matched = text.match(/https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/);
-        if (matched && !resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          console.log(`[Cloudflare Tunnel SUCCESS for ${name}]: ${matched[0]}`);
-          resolve(matched[0]);
-        }
-      };
-
-      if (proc.stdout) proc.stdout.on('data', checkOutput);
-      if (proc.stderr) proc.stderr.on('data', checkOutput);
-
-      proc.on('error', (err) => {
-        console.error(`[Cloudflare Tunnel process error for ${name}]:`, err.message);
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          resolve(null);
-        }
-      });
+      }, 1000);
     });
   }
 
