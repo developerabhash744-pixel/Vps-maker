@@ -84,6 +84,17 @@ class ContainerManager {
     return image;
   }
 
+  getWebTerminalUrl(webPort) {
+    if (!webPort) return null;
+    if (config.daytonaProxy) {
+      // Clean base domain (strip any leading port e.g. "22222-")
+      const baseDomain = config.daytonaProxy.replace(/^\d+-/, '').replace(/\/+$/, '');
+      return `https://${webPort}-${baseDomain}/`;
+    }
+    const hostIp = this.getHostPublicIP();
+    return `http://${hostIp}:${webPort}`;
+  }
+
   async createContainer({ name, image, cpu, ram }) {
     const rootPassword = this.generatePassword();
     const targetImage = this.formatImage(image);
@@ -128,7 +139,7 @@ class ContainerManager {
 
         exec(`docker exec ${name} bash -c "${initScript.replace(/\n/g, ' ')}"`);
 
-        const webTerminalUrl = `http://${hostIp}:${webPort}`;
+        const webTerminalUrl = this.getWebTerminalUrl(webPort);
 
         return {
           success: true,
@@ -219,7 +230,7 @@ class ContainerManager {
           ipv4: ip,
           sshPort,
           webPort,
-          webTerminalUrl: webPort ? `http://${hostIp}:${webPort}` : null,
+          webTerminalUrl: this.getWebTerminalUrl(webPort),
           memoryUsage: isRunning ? 'Active' : 'Offline',
           engine: 'Docker',
         };
