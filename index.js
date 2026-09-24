@@ -1,7 +1,7 @@
 const dns = require('dns');
 dns.setDefaultResultOrder('ipv4first');
 
-const { Client, GatewayIntentBits, ActivityType, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, ActivityType, Collection, Events } = require('discord.js');
 const config = require('./config');
 const db = require('./database');
 const container = require('./containerManager');
@@ -51,7 +51,7 @@ function updatePresence() {
 }
 
 // Ready event
-client.once('ready', () => {
+client.once(Events.ClientReady, () => {
   console.log(`=========================================`);
   console.log(`🚀 ${config.hostingName} Bot is ONLINE!`);
   console.log(`🤖 Logged in as: ${client.user.tag}`);
