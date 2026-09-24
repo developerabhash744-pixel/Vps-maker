@@ -104,7 +104,7 @@ export default {
     let targetUrl;
 
     if (isWebSocket) {
-      targetUrl = new URL('wss://gateway.discord.gg' + url.pathname + url.search);
+      targetUrl = new URL('https://gateway.discord.gg' + url.pathname + url.search);
     } else {
       targetUrl = new URL('https://discord.com' + url.pathname + url.search);
     }
