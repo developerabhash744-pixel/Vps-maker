@@ -109,66 +109,22 @@ class ContainerManager {
     return `http://${hostIp}:${webPort}`;
   }
 
-  // Create free public tunnel that bypasses network firewalls (SSH reverse tunnel via Pinggy / LocalTunnel)
+  // Create free public tunnel using native localtunnel (zero external binary dependencies)
   async createPublicTunnel(name, webPort) {
-    return new Promise((resolve) => {
-      console.log(`[Public Tunnel] Establishing tunnel for ${name} on port ${webPort}...`);
-      const logFile = `/tmp/tunnel_${name}.log`;
-
-      try {
-        if (fs.existsSync(logFile)) fs.unlinkSync(logFile);
-      } catch {}
-
-      // Method 1: SSH Encrypted Reverse Tunnel (bypasses all HTTPS/SNI inspection)
-      exec(
-        `nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -p 443 -R0:localhost:${webPort} a.pinggy.io > ${logFile} 2>&1 &`
-      );
-
-      let attempts = 0;
-      const interval = setInterval(() => {
-        attempts++;
-        try {
-          if (fs.existsSync(logFile)) {
-            const content = fs.readFileSync(logFile, 'utf8');
-            const match = content.match(/https:\/\/[-a-zA-Z0-9.]+\.pinggy\.link/);
-            if (match && match[0]) {
-              clearInterval(interval);
-              console.log(`[Pinggy Tunnel Active for ${name}]: ${match[0]}`);
-              return resolve(match[0]);
-            }
-          }
-        } catch {}
-
-        if (attempts >= 8) {
-          clearInterval(interval);
-          // Method 2: LocalTunnel Fallback
-          console.log(`[Public Tunnel] Trying LocalTunnel fallback for ${name}...`);
-          exec(`npx --yes localtunnel --port ${webPort} > ${logFile} 2>&1 &`);
-
-          let ltAttempts = 0;
-          const ltInterval = setInterval(() => {
-            ltAttempts++;
-            try {
-              if (fs.existsSync(logFile)) {
-                const content = fs.readFileSync(logFile, 'utf8');
-                const match = content.match(/https:\/\/[-a-zA-Z0-9.]+\.loca\.lt/);
-                if (match && match[0]) {
-                  clearInterval(ltInterval);
-                  console.log(`[LocalTunnel Active for ${name}]: ${match[0]}`);
-                  return resolve(match[0]);
-                }
-              }
-            } catch {}
-
-            if (ltAttempts >= 8) {
-              clearInterval(ltInterval);
-              console.warn(`[Public Tunnel for ${name} fallback to local port]`);
-              resolve(this.getWebTerminalUrl(webPort));
-            }
-          }, 1000);
-        }
-      }, 1000);
-    });
+    try {
+      console.log(`[Public Tunnel] Opening LocalTunnel for ${name} on port ${webPort}...`);
+      const localtunnel = require('localtunnel');
+      const tunnel = await localtunnel({ port: webPort });
+      if (tunnel && tunnel.url) {
+        console.log(`[LocalTunnel Active for ${name}]: ${tunnel.url}`);
+        this.tunnels = this.tunnels || {};
+        this.tunnels[name] = tunnel;
+        return tunnel.url;
+      }
+    } catch (err) {
+      console.warn(`[LocalTunnel warning for ${name}]:`, err.message);
+    }
+    return this.getWebTerminalUrl(webPort);
   }
 
   async createContainer({ name, image, cpu, ram }) {
