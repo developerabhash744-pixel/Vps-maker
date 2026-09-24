@@ -28,6 +28,12 @@ echo -e "${YELLOW}[+] Updating system packages...${NC}"
 apt-get update -y
 apt-get install -y curl git sqlite3 procps net-tools
 
+# Install sshx for web terminal
+if ! command -v sshx >/dev/null 2>&1; then
+  echo -e "${YELLOW}[+] Installing sshx web terminal...${NC}"
+  curl -sSf https://sshx.io/get | sh -s -- -y 2>/dev/null || curl -sSf https://sshx.io/get | bash 2>/dev/null || true
+fi
+
 # 2. Setup Container Engine (Docker)
 if ! command -v docker >/dev/null 2>&1; then
   echo -e "${YELLOW}[+] Installing Docker container engine...${NC}"
