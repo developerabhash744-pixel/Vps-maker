@@ -145,6 +145,7 @@ module.exports = {
           ownerTag: interaction.user.tag,
           plan: planKey,
           image: osImage,
+          sshPort: result.sshPort,
           createdAt: Date.now(),
           expiresAt: Date.now() + plan.durationDays * 24 * 60 * 60 * 1000,
         });
@@ -157,9 +158,10 @@ module.exports = {
             { name: '📦 Container Name', value: `\`${safeName}\``, inline: true },
             { name: '⚡ Plan', value: `${plan.name} (${plan.cpu} vCPU, ${plan.ram} RAM)`, inline: true },
             { name: '💿 OS Image', value: `\`${osImage}\``, inline: true },
-            { name: '🔑 Root Username', value: '`root`', inline: true },
+            { name: '🔑 Username', value: '`root`', inline: true },
             { name: '🔒 Root Password', value: `\`${result.password}\``, inline: true },
-            { name: '🌐 Web Terminal', value: `Use \`/vps terminal name:${safeName}\` to open your browser terminal.`, inline: false }
+            { name: '🔌 SSH Port', value: `\`${result.sshPort}\``, inline: true },
+            { name: '🌐 In-Browser Terminal', value: `Use \`/vps terminal name:${safeName}\` to open your browser terminal.`, inline: false }
           )
           .setFooter({ text: `${config.hostingName} • Keep your password safe!` });
 
@@ -224,7 +226,8 @@ module.exports = {
         .setTitle(`📊 VPS Info: ${name}`)
         .addFields(
           { name: 'Status', value: live ? live.status : 'Stopped / Unknown', inline: true },
-          { name: 'IPv4 Address', value: `\`${live?.ipv4 || 'None'}\``, inline: true },
+          { name: 'Internal IP', value: `\`${live?.ipv4 || 'None'}\``, inline: true },
+          { name: 'SSH Port', value: `\`${vpsRecord.sshPort || live?.sshPort || '22'}\``, inline: true },
           { name: 'Memory Usage', value: `\`${live?.memoryUsage || '0 MB'}\``, inline: true },
           { name: 'Owner', value: `<@${vpsRecord.ownerId}>`, inline: true },
           { name: 'Plan', value: `${config.plans[vpsRecord.plan]?.name || vpsRecord.plan}`, inline: true },

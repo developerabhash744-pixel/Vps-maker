@@ -21,7 +21,7 @@ class ContainerManager {
         this.run(`${lxcBin} version`);
         return 'lxd';
       } catch {
-        return 'docker'; // default fallback
+        return 'docker';
       }
     }
   }
@@ -51,13 +51,15 @@ class ContainerManager {
     return password;
   }
 
-  // Format RAM string for Docker (e.g., '1GiB' -> '1g')
+  getRandomPort() {
+    return Math.floor(Math.random() * (45000 - 20000) + 20000);
+  }
+
   formatDockerMemory(ram) {
     if (!ram) return '1g';
     return ram.toLowerCase().replace('gib', 'g').replace('mib', 'm');
   }
 
-  // Format OS image name for Docker or LXD
   formatImage(image) {
     if (this.engine === 'docker') {
       if (image === 'ubuntu:24.04' || image === 'ubuntu:22.04') return image;
@@ -70,26 +72,40 @@ class ContainerManager {
   async createContainer({ name, image, cpu, ram }) {
     const rootPassword = this.generatePassword();
     const targetImage = this.formatImage(image);
+    const sshPort = this.getRandomPort();
 
     if (this.engine === 'docker') {
       try {
         const memLimit = this.formatDockerMemory(ram);
         const cpuLimit = cpu || '1';
 
-        // 1. Run container in background with persistent init
+        // 1. Launch container with exposed SSH port & persistent background process
         this.run(
-          `docker run -d --name ${name} --hostname ${name} --memory="${memLimit}" --cpus="${cpuLimit}" ${targetImage} sleep infinity`
+          `docker run -d --name ${name} --hostname ${name} -p ${sshPort}:22 --memory="${memLimit}" --cpus="${cpuLimit}" ${targetImage} sleep infinity`
         );
 
-        // 2. Setup root password and basic tools
+        // 2. Set root password
         this.run(`docker exec ${name} bash -c "echo 'root:${rootPassword}' | chpasswd"`);
-        
-        // Background package setup so container is immediately responsive
-        exec(
-          `docker exec ${name} bash -c "apt-get update -y && apt-get install -y openssh-server curl sudo procps net-tools"`
-        );
 
-        return { success: true, password: rootPassword };
+        // 3. Setup SSH, curl, and sshx in the background
+        const initScript = `
+          apt-get update -y >/dev/null 2>&1
+          apt-get install -y openssh-server curl sudo procps net-tools ca-certificates >/dev/null 2>&1
+          mkdir -p /var/run/sshd
+          sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config 2>/dev/null || true
+          sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || true
+          service ssh restart >/dev/null 2>&1 || /etc/init.d/ssh restart >/dev/null 2>&1 || true
+          curl -sSf https://sshx.io/get | sh >/dev/null 2>&1 || true
+          cp /root/.local/bin/sshx /usr/local/bin/sshx >/dev/null 2>&1 || true
+        `;
+
+        exec(`docker exec ${name} bash -c "${initScript.replace(/\n/g, ' ')}"`);
+
+        return {
+          success: true,
+          password: rootPassword,
+          sshPort,
+        };
       } catch (err) {
         try {
           this.run(`docker rm -f ${name}`);
@@ -97,14 +113,14 @@ class ContainerManager {
         throw new Error(`Failed to create Docker VPS: ${err.message}`);
       }
     } else {
-      // LXD Engine
+      // LXD Engine fallback
       const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
       try {
         this.run(`${lxcBin} launch ${targetImage} ${name}`);
         if (cpu) this.run(`${lxcBin} config set ${name} limits.cpu ${cpu}`);
         if (ram) this.run(`${lxcBin} config set ${name} limits.memory ${ram}`);
         this.run(`${lxcBin} exec ${name} -- bash -c "echo 'root:${rootPassword}' | chpasswd"`);
-        return { success: true, password: rootPassword };
+        return { success: true, password: rootPassword, sshPort: 22 };
       } catch (err) {
         try {
           this.run(`${lxcBin} delete -f ${name}`);
@@ -159,11 +175,13 @@ class ContainerManager {
 
         const isRunning = data.State?.Running;
         const ip = data.NetworkSettings?.IPAddress || '127.0.0.1';
+        const portBinding = data.HostConfig?.PortBindings?.['22/tcp']?.[0]?.HostPort || 'N/A';
 
         return {
           name,
           status: isRunning ? 'Running' : 'Stopped',
           ipv4: ip,
+          sshPort: portBinding,
           memoryUsage: isRunning ? 'Active' : 'Offline',
           engine: 'Docker',
         };
@@ -182,6 +200,7 @@ class ContainerManager {
           name: info.name,
           status: info.status,
           ipv4,
+          sshPort: '22',
           memoryUsage: info.state?.memory?.usage ? `${Math.round(info.state.memory.usage / 1024 / 1024)} MB` : 'N/A',
           engine: 'LXD',
         };
@@ -194,13 +213,24 @@ class ContainerManager {
   async createWebTerminal(name) {
     return new Promise((resolve, reject) => {
       const script = `
+        export PATH="/usr/local/bin:/root/.local/bin:$PATH"
+        pkill -9 -f sshx 2>/dev/null || true
         if ! command -v sshx >/dev/null 2>&1; then
-          apt-get update -y >/dev/null 2>&1 && apt-get install -y curl >/dev/null 2>&1
+          apt-get update -y >/dev/null 2>&1 && apt-get install -y curl ca-certificates >/dev/null 2>&1
           curl -sSf https://sshx.io/get | sh >/dev/null 2>&1
+          cp /root/.local/bin/sshx /usr/local/bin/sshx 2>/dev/null || true
         fi
+        rm -f /tmp/.sshx.log
         nohup sshx > /tmp/.sshx.log 2>&1 &
-        sleep 3
-        grep -o 'https://sshx.io/s/[^ ]*' /tmp/.sshx.log | head -n 1
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          sleep 1
+          LINK=$(grep -o 'https://sshx.io/s/[^ ]*' /tmp/.sshx.log 2>/dev/null | head -n 1)
+          if [ -n "$LINK" ]; then
+            echo "$LINK"
+            exit 0
+          fi
+        done
+        cat /tmp/.sshx.log 2>/dev/null
       `;
 
       const execCmd =
@@ -208,13 +238,13 @@ class ContainerManager {
           ? `docker exec ${name} bash -c "${script.replace(/\n/g, ' ')}"`
           : `${fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc'} exec ${name} -- bash -c "${script.replace(/\n/g, ' ')}"`;
 
-      exec(execCmd, (err, stdout) => {
-        if (err) return reject(new Error('Failed to start web terminal session.'));
-        const link = stdout.trim();
-        if (link && link.startsWith('https://sshx.io/s/')) {
-          resolve(link);
+      exec(execCmd, { timeout: 25000 }, (err, stdout) => {
+        const link = (stdout || '').trim();
+        const matched = link.match(/https:\/\/sshx\.io\/s\/[^\s\x1b]+/);
+        if (matched && matched[0]) {
+          resolve(matched[0]);
         } else {
-          reject(new Error('Web terminal session could not be established. Please try again in 5 seconds.'));
+          reject(new Error(link || 'Web terminal session could not be established.'));
         }
       });
     });
