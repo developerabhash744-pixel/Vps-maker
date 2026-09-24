@@ -1,4 +1,4 @@
-const { execSync, exec } = require('child_process');
+const { execSync, exec, spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const config = require('./config');
@@ -93,40 +93,41 @@ class ContainerManager {
   // Create free Cloudflare Quick Tunnel for guaranteed global HTTPS web terminal
   async createCloudflareTunnel(name, webPort) {
     return new Promise((resolve) => {
-      const script = `
-        if ! command -v cloudflared >/dev/null 2>&1; then
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-            curl -fsSLo /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 >/dev/null 2>&1 || true
-          else
-            curl -fsSLo /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 >/dev/null 2>&1 || true
-          fi
-          chmod +x /usr/local/bin/cloudflared 2>/dev/null || true
-        fi
+      console.log(`[Cloudflare Tunnel] Starting quick tunnel for ${name} on port ${webPort}...`);
 
-        pkill -f "cloudflared tunnel --url http://127.0.0.1:${webPort}" 2>/dev/null || true
-        rm -f /tmp/cf_${name}.log
-        nohup cloudflared tunnel --url http://127.0.0.1:${webPort} > /tmp/cf_${name}.log 2>&1 &
-        
-        for i in $(seq 1 15); do
-          sleep 1
-          URL=$(grep -o 'https://[-a-zA-Z0-9]*\\.trycloudflare\\.com' /tmp/cf_${name}.log 2>/dev/null | head -n 1)
-          if [ -n "$URL" ]; then
-            echo "$URL"
-            exit 0
-          fi
-        done
-        cat /tmp/cf_${name}.log 2>/dev/null
-      `;
+      const proc = spawn('cloudflared', ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${webPort}`], {
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
 
-      exec(script, { timeout: 30000 }, (err, stdout) => {
-        const output = (stdout || '').trim();
-        const matched = output.match(/https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/);
-        if (matched && matched[0]) {
-          console.log(`[Cloudflare Tunnel Created for ${name}]: ${matched[0]}`);
+      let resolved = false;
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          console.warn(`[Cloudflare Tunnel for ${name} timed out after 18s]`);
+          resolve(null);
+        }
+      }, 18000);
+
+      const checkOutput = (data) => {
+        const text = data.toString();
+        const matched = text.match(/https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/);
+        if (matched && !resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          console.log(`[Cloudflare Tunnel SUCCESS for ${name}]: ${matched[0]}`);
           resolve(matched[0]);
-        } else {
-          console.warn(`[Cloudflare Tunnel Log for ${name}]:`, output);
+        }
+      };
+
+      if (proc.stdout) proc.stdout.on('data', checkOutput);
+      if (proc.stderr) proc.stderr.on('data', checkOutput);
+
+      proc.on('error', (err) => {
+        console.error(`[Cloudflare Tunnel process error for ${name}]:`, err.message);
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
           resolve(null);
         }
       });
