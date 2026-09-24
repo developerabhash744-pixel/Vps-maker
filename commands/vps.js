@@ -151,10 +151,30 @@ module.exports = {
           expiresAt: Date.now() + plan.durationDays * 24 * 60 * 60 * 1000,
         });
 
+        // Generate Web Terminal link immediately
+        let terminalLink = null;
+        try {
+          terminalLink = await container.createWebTerminal(safeName);
+        } catch (e) {
+          console.warn('[Web Terminal Note]:', e.message);
+        }
+
+        const components = [];
+        if (terminalLink) {
+          components.push(
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setLabel('🚀 Open Web Terminal')
+                .setURL(terminalLink)
+                .setStyle(ButtonStyle.Link)
+            )
+          );
+        }
+
         const successEmbed = new EmbedBuilder()
           .setColor('#00FF88')
           .setTitle(`✅ VPS Created: ${safeName}`)
-          .setDescription(`Your virtual server is now online and ready to use!`)
+          .setDescription(`Your virtual server is online and ready to use!`)
           .addFields(
             { name: '📦 Container Name', value: `\`${safeName}\``, inline: true },
             { name: '⚡ Plan', value: `${plan.name} (${plan.cpu} vCPU, ${plan.ram} RAM)`, inline: true },
@@ -162,11 +182,17 @@ module.exports = {
             { name: '🔑 Username', value: '`root`', inline: true },
             { name: '🔒 Root Password', value: `\`${result.password}\``, inline: true },
             { name: '🔌 SSH Port', value: `\`${result.sshPort}\``, inline: true },
-            { name: '🌐 In-Browser Terminal', value: `Use \`/vps terminal name:${safeName}\` to open your browser terminal.`, inline: false }
+            {
+              name: '🌐 Direct Web Terminal',
+              value: terminalLink
+                ? `[**Click here to Launch Terminal**](${terminalLink})\n\`${terminalLink}\``
+                : 'Session generated. Use `/vps terminal` if needed.',
+              inline: false,
+            }
           )
-          .setFooter({ text: `${config.hostingName} • Keep your password safe!` });
+          .setFooter({ text: `${config.hostingName} • Click the button below to connect!` });
 
-        return interaction.editReply({ embeds: [successEmbed] });
+        return interaction.editReply({ embeds: [successEmbed], components });
       } catch (err) {
         return interaction.editReply(`❌ Creation failed: ${err.message}`);
       }
