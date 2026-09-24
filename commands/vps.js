@@ -195,7 +195,28 @@ module.exports = {
           )
           .setFooter({ text: `${config.hostingName} • Keep your password safe!` });
 
-        return interaction.editReply({ embeds: [successEmbed], components });
+        let dmSent = false;
+        try {
+          await interaction.user.send({ embeds: [successEmbed], components });
+          dmSent = true;
+        } catch (e) {
+          console.warn('Could not send DM to user:', e.message);
+        }
+
+        if (dmSent) {
+          const publicNoticeEmbed = new EmbedBuilder()
+            .setColor('#00FF88')
+            .setTitle(`✅ VPS Provisioned: ${safeName}`)
+            .setDescription(`Your virtual server is online and ready!\n\n📩 **All access credentials & web terminal link have been sent to your Direct Messages (DMs).**`)
+            .setFooter({ text: `${config.hostingName} • Check your DMs` });
+          return interaction.editReply({ embeds: [publicNoticeEmbed], components: [] });
+        } else {
+          return interaction.editReply({
+            content: '⚠️ *Could not send you a Direct Message (your DMs might be closed). Here are your credentials privately:*',
+            embeds: [successEmbed],
+            components,
+          });
+        }
       } catch (err) {
         return interaction.editReply(`❌ Creation failed: ${err.message}`);
       }
@@ -288,7 +309,23 @@ module.exports = {
           )
           .setFooter({ text: config.hostingName });
 
-        return interaction.editReply({ embeds: [embed], components: [row] });
+        let dmSent = false;
+        try {
+          await interaction.user.send({ embeds: [embed], components: [row] });
+          dmSent = true;
+        } catch (e) {
+          console.warn('Could not send DM to user:', e.message);
+        }
+
+        if (dmSent) {
+          return interaction.editReply({
+            content: `📩 **Web terminal link for \`${name}\` has been sent privately to your DMs.**`,
+            embeds: [],
+            components: [],
+          });
+        } else {
+          return interaction.editReply({ embeds: [embed], components: [row] });
+        }
       } catch (err) {
         return interaction.editReply(`❌ Could not open terminal: ${err.message}`);
       }

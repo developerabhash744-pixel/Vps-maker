@@ -10,6 +10,7 @@ class ContainerManager {
     this.cachedIP = null;
     this.tunnels = {};
     this.ngrokListeners = {};
+    this.workerBridges = {};
     this.ensureHostTtyd();
   }
 
@@ -111,7 +112,67 @@ class ContainerManager {
     return `http://${hostIp}:${webPort}`;
   }
 
-  // 1. Ngrok Ingress (Native official SDK - unblockable by firewall)
+  // 1. Cloudflare Worker Secure Web Terminal Bridge (Whitelisted & Firewall-Proof)
+  createWorkerBridge(name) {
+    if (!config.proxyUrl) return null;
+    const token = crypto.randomBytes(12).toString('hex');
+    const wsUrl = config.proxyUrl.replace(/^http/, 'ws').replace(/\/+$/, '') + `/tunnel/${name}?token=${token}`;
+    const webUrl = config.proxyUrl.replace(/\/+$/, '') + `/term/${name}?token=${token}`;
+
+    try {
+      const WebSocket = require('ws');
+      const ws = new WebSocket(wsUrl);
+
+      ws.on('open', () => {
+        console.log(`[Worker Bridge Active for ${name}]: ${webUrl}`);
+        const cmd = this.engine === 'docker' ? 'docker' : (fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc');
+        const args = this.engine === 'docker'
+          ? ['exec', '-i', name, 'bash', '-l']
+          : ['exec', name, '--', 'bash', '-l'];
+
+        const proc = spawn(cmd, args, {
+          env: { ...process.env, TERM: 'xterm-256color' },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        proc.stdout.on('data', (d) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(d);
+        });
+        proc.stderr.on('data', (d) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(d);
+        });
+
+        ws.on('message', (msg) => {
+          try {
+            proc.stdin.write(msg);
+          } catch {}
+        });
+
+        ws.on('close', () => {
+          try { proc.kill('SIGKILL'); } catch {}
+          delete this.workerBridges[name];
+        });
+
+        proc.on('close', () => {
+          try { ws.close(); } catch {}
+          delete this.workerBridges[name];
+        });
+
+        this.workerBridges[name] = { ws, proc, url: webUrl, token };
+      });
+
+      ws.on('error', (err) => {
+        console.warn(`[Worker Bridge error for ${name}]:`, err.message);
+      });
+
+      return webUrl;
+    } catch (e) {
+      console.warn(`[Worker Bridge exception]:`, e.message);
+      return null;
+    }
+  }
+
+  // 2. Ngrok Ingress (Native official SDK)
   async createNgrokTunnel(name, webPort) {
     const token = config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN;
     if (!token) return null;
@@ -134,15 +195,21 @@ class ContainerManager {
     return null;
   }
 
-  // 2. Public Tunnel Manager
+  // 3. Public Tunnel Manager
   async createPublicTunnel(name, webPort) {
-    // A. Priority 1: Ngrok
+    // Priority 1: Cloudflare Worker Bridge (Firewall-Proof)
+    try {
+      const workerUrl = this.createWorkerBridge(name);
+      if (workerUrl) return workerUrl;
+    } catch {}
+
+    // Priority 2: Ngrok
     try {
       const ngrokUrl = await this.createNgrokTunnel(name, webPort);
       if (ngrokUrl) return ngrokUrl;
     } catch {}
 
-    // B. Priority 2: LocalTunnel npm
+    // Priority 3: LocalTunnel npm
     try {
       console.log(`[Public Tunnel] Opening LocalTunnel for ${name} on port ${webPort}...`);
       const localtunnel = require('localtunnel');
@@ -156,7 +223,7 @@ class ContainerManager {
       console.warn(`[LocalTunnel warning for ${name}]:`, err.message);
     }
 
-    // C. Fallback: Host Direct IP
+    // Fallback: Host Direct IP
     return this.getWebTerminalUrl(webPort);
   }
 
@@ -198,7 +265,7 @@ class ContainerManager {
           `nohup ttyd -p ${webPort} -i 127.0.0.1 -c root:${rootPassword} -W docker exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
         );
 
-        // 5. Open Public Web Tunnel (Ngrok / LocalTunnel)
+        // 5. Open Public Web Tunnel (Worker Bridge / Ngrok / LocalTunnel)
         let webTerminalUrl = await this.createPublicTunnel(name, webPort);
         if (!webTerminalUrl) {
           webTerminalUrl = this.getWebTerminalUrl(webPort);
@@ -226,7 +293,8 @@ class ContainerManager {
         if (cpu) this.run(`${lxcBin} config set ${name} limits.cpu ${cpu}`);
         if (ram) this.run(`${lxcBin} config set ${name} limits.memory ${ram}`);
         this.run(`${lxcBin} exec ${name} -- bash -c "echo 'root:${rootPassword}' | chpasswd"`);
-        return { success: true, password: rootPassword, sshPort: 22, webPort: null, webTerminalUrl: null, hostIp };
+        const webTerminalUrl = this.createWorkerBridge(name) || this.getWebTerminalUrl(22);
+        return { success: true, password: rootPassword, sshPort: 22, webPort: null, webTerminalUrl, hostIp };
       } catch (err) {
         try {
           this.run(`${lxcBin} delete -f ${name}`);
@@ -249,6 +317,11 @@ class ContainerManager {
     if (this.engine === 'docker') {
       this.run(`docker stop ${name}`);
       exec(`pkill -f "ttyd.*${name}" 2>/dev/null || true`);
+      if (this.workerBridges[name]) {
+        try { this.workerBridges[name].ws.close(); } catch {}
+        try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
+        delete this.workerBridges[name];
+      }
       if (this.ngrokListeners[name]) {
         try { this.ngrokListeners[name].close(); } catch {}
         delete this.ngrokListeners[name];
@@ -273,6 +346,11 @@ class ContainerManager {
       this.run(`docker rm -f ${name}`);
       exec(`pkill -f "ttyd.*${name}" 2>/dev/null || true`);
       exec(`pkill -f "cloudflared.*${name}" 2>/dev/null || true`);
+      if (this.workerBridges[name]) {
+        try { this.workerBridges[name].ws.close(); } catch {}
+        try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
+        delete this.workerBridges[name];
+      }
       if (this.ngrokListeners[name]) {
         try { this.ngrokListeners[name].close(); } catch {}
         delete this.ngrokListeners[name];
@@ -331,6 +409,15 @@ class ContainerManager {
   async createWebTerminal(name) {
     const vps = db.getVPS(name);
     if (!vps) throw new Error('VPS not found in database.');
+
+    // 1. Worker bridge
+    if (config.proxyUrl) {
+      const workerUrl = this.createWorkerBridge(name);
+      if (workerUrl) {
+        db.setVPS(name, { ...vps, webTerminalUrl: workerUrl });
+        return workerUrl;
+      }
+    }
 
     if (this.ngrokListeners && this.ngrokListeners[name] && this.ngrokListeners[name].url()) {
       return this.ngrokListeners[name].url();
