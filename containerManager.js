@@ -109,19 +109,19 @@ class ContainerManager {
     return `http://${hostIp}:${webPort}`;
   }
 
-  // Create free Cloudflare Quick Tunnel for guaranteed global HTTPS web terminal
-  async createCloudflareTunnel(name, webPort) {
+  // Create free public tunnel that bypasses network firewalls (SSH reverse tunnel via Pinggy / LocalTunnel)
+  async createPublicTunnel(name, webPort) {
     return new Promise((resolve) => {
-      console.log(`[Cloudflare Tunnel] Launching persistent daemon for ${name} on port ${webPort}...`);
-      const logFile = `/tmp/cf_${name}.log`;
+      console.log(`[Public Tunnel] Establishing tunnel for ${name} on port ${webPort}...`);
+      const logFile = `/tmp/tunnel_${name}.log`;
 
       try {
         if (fs.existsSync(logFile)) fs.unlinkSync(logFile);
       } catch {}
 
-      // Launch independent background daemon that persists 24/7
+      // Method 1: SSH Encrypted Reverse Tunnel (bypasses all HTTPS/SNI inspection)
       exec(
-        `nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:${webPort} > ${logFile} 2>&1 &`
+        `nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -p 443 -R0:localhost:${webPort} a.pinggy.io > ${logFile} 2>&1 &`
       );
 
       let attempts = 0;
@@ -130,19 +130,42 @@ class ContainerManager {
         try {
           if (fs.existsSync(logFile)) {
             const content = fs.readFileSync(logFile, 'utf8');
-            const match = content.match(/https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/);
+            const match = content.match(/https:\/\/[-a-zA-Z0-9.]+\.pinggy\.link/);
             if (match && match[0]) {
               clearInterval(interval);
-              console.log(`[Cloudflare Tunnel Active for ${name}]: ${match[0]}`);
+              console.log(`[Pinggy Tunnel Active for ${name}]: ${match[0]}`);
               return resolve(match[0]);
             }
           }
         } catch {}
 
-        if (attempts >= 20) {
+        if (attempts >= 8) {
           clearInterval(interval);
-          console.warn(`[Cloudflare Tunnel for ${name} timed out after 20s]`);
-          resolve(null);
+          // Method 2: LocalTunnel Fallback
+          console.log(`[Public Tunnel] Trying LocalTunnel fallback for ${name}...`);
+          exec(`npx --yes localtunnel --port ${webPort} > ${logFile} 2>&1 &`);
+
+          let ltAttempts = 0;
+          const ltInterval = setInterval(() => {
+            ltAttempts++;
+            try {
+              if (fs.existsSync(logFile)) {
+                const content = fs.readFileSync(logFile, 'utf8');
+                const match = content.match(/https:\/\/[-a-zA-Z0-9.]+\.loca\.lt/);
+                if (match && match[0]) {
+                  clearInterval(ltInterval);
+                  console.log(`[LocalTunnel Active for ${name}]: ${match[0]}`);
+                  return resolve(match[0]);
+                }
+              }
+            } catch {}
+
+            if (ltAttempts >= 8) {
+              clearInterval(ltInterval);
+              console.warn(`[Public Tunnel for ${name} fallback to local port]`);
+              resolve(this.getWebTerminalUrl(webPort));
+            }
+          }, 1000);
         }
       }, 1000);
     });
@@ -186,8 +209,8 @@ class ContainerManager {
           `nohup ttyd -p ${webPort} -i 127.0.0.1 -c root:${rootPassword} -W docker exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
         );
 
-        // 5. Create Cloudflare Tunnel for universal HTTPS browser access
-        let webTerminalUrl = await this.createCloudflareTunnel(name, webPort);
+        // 5. Create Public Tunnel for universal HTTPS browser access
+        let webTerminalUrl = await this.createPublicTunnel(name, webPort);
         if (!webTerminalUrl) {
           webTerminalUrl = this.getWebTerminalUrl(webPort);
         }
