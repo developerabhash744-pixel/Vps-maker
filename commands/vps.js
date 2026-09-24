@@ -5,6 +5,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   PermissionFlagsBits,
+  MessageFlags,
 } = require('discord.js');
 const container = require('../containerManager');
 const db = require('../database');
@@ -103,7 +104,7 @@ module.exports = {
 
     // 1. CREATE
     if (sub === 'create') {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const rawName = interaction.options.getString('name').trim().toLowerCase();
       const safeName = rawName.replace(/[^a-z0-9-]/g, '');
@@ -177,7 +178,7 @@ module.exports = {
       if (vpsList.length === 0) {
         return interaction.reply({
           content: 'You do not have any active VPS containers. Use `/vps create` to deploy one!',
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -197,7 +198,7 @@ module.exports = {
         });
       });
 
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
     // Check ownership for single-container subcommands
@@ -205,7 +206,7 @@ module.exports = {
     const vpsRecord = db.getVPS(name);
 
     if (!vpsRecord) {
-      return interaction.reply({ content: `❌ VPS \`${name}\` not found in database.`, ephemeral: true });
+      return interaction.reply({ content: `❌ VPS \`${name}\` not found in database.`, flags: MessageFlags.Ephemeral });
     }
 
     const isOwner = interaction.guild?.ownerId === userId;
@@ -215,7 +216,7 @@ module.exports = {
     const isAdmin = isOwner || config.adminIds.includes(userId) || hasAdminPerm;
 
     if (vpsRecord.ownerId !== userId && !isAdmin) {
-      return interaction.reply({ content: `❌ You do not own this VPS.`, ephemeral: true });
+      return interaction.reply({ content: `❌ You do not own this VPS.`, flags: MessageFlags.Ephemeral });
     }
 
     // 3. INFO
@@ -235,12 +236,12 @@ module.exports = {
         )
         .setFooter({ text: config.hostingName });
 
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
     // 4. TERMINAL (Web sshx)
     if (sub === 'terminal') {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         const link = await container.createWebTerminal(name);
         const row = new ActionRowBuilder().addComponents(
@@ -263,9 +264,9 @@ module.exports = {
     if (sub === 'start') {
       try {
         container.start(name);
-        return interaction.reply({ content: `🟢 Started \`${name}\`.`, ephemeral: true });
+        return interaction.reply({ content: `🟢 Started \`${name}\`.`, flags: MessageFlags.Ephemeral });
       } catch (err) {
-        return interaction.reply({ content: `❌ Failed to start: ${err.message}`, ephemeral: true });
+        return interaction.reply({ content: `❌ Failed to start: ${err.message}`, flags: MessageFlags.Ephemeral });
       }
     }
 
@@ -273,9 +274,9 @@ module.exports = {
     if (sub === 'stop') {
       try {
         container.stop(name);
-        return interaction.reply({ content: `🛑 Stopped \`${name}\`.`, ephemeral: true });
+        return interaction.reply({ content: `🛑 Stopped \`${name}\`.`, flags: MessageFlags.Ephemeral });
       } catch (err) {
-        return interaction.reply({ content: `❌ Failed to stop: ${err.message}`, ephemeral: true });
+        return interaction.reply({ content: `❌ Failed to stop: ${err.message}`, flags: MessageFlags.Ephemeral });
       }
     }
 
@@ -283,9 +284,9 @@ module.exports = {
     if (sub === 'restart') {
       try {
         container.restart(name);
-        return interaction.reply({ content: `🔄 Restarted \`${name}\`.`, ephemeral: true });
+        return interaction.reply({ content: `🔄 Restarted \`${name}\`.`, flags: MessageFlags.Ephemeral });
       } catch (err) {
-        return interaction.reply({ content: `❌ Failed to restart: ${err.message}`, ephemeral: true });
+        return interaction.reply({ content: `❌ Failed to restart: ${err.message}`, flags: MessageFlags.Ephemeral });
       }
     }
 
@@ -294,9 +295,9 @@ module.exports = {
       try {
         container.delete(name);
         db.removeVPS(name);
-        return interaction.reply({ content: `🗑️ Permanently deleted \`${name}\`.`, ephemeral: true });
+        return interaction.reply({ content: `🗑️ Permanently deleted \`${name}\`.`, flags: MessageFlags.Ephemeral });
       } catch (err) {
-        return interaction.reply({ content: `❌ Failed to delete: ${err.message}`, ephemeral: true });
+        return interaction.reply({ content: `❌ Failed to delete: ${err.message}`, flags: MessageFlags.Ephemeral });
       }
     }
   },

@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, MessageFlags } = require('discord.js');
 const container = require('../containerManager');
 const db = require('../database');
 const config = require('../config');
@@ -32,7 +32,7 @@ module.exports = {
       interaction.member?.permissions?.has?.(PermissionFlagsBits.Administrator);
 
     if (!isOwner && !isConfigAdmin && !hasAdminPerm) {
-      return interaction.reply({ content: '❌ You do not have permission to use admin commands.', ephemeral: true });
+      return interaction.reply({ content: '❌ You do not have permission to use admin commands.', flags: MessageFlags.Ephemeral });
     }
 
     const sub = interaction.options.getSubcommand();
@@ -40,7 +40,7 @@ module.exports = {
     if (sub === 'list') {
       const allVPS = db.getAllVPS();
       if (allVPS.length === 0) {
-        return interaction.reply({ content: 'No VPS containers found in database.', ephemeral: true });
+        return interaction.reply({ content: 'No VPS containers found in database.', flags: MessageFlags.Ephemeral });
       }
 
       const embed = new EmbedBuilder()
@@ -58,7 +58,7 @@ module.exports = {
         });
       });
 
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
     if (sub === 'force-delete') {
@@ -67,7 +67,7 @@ module.exports = {
         container.delete(name);
       } catch {}
       db.removeVPS(name);
-      return interaction.reply({ content: `✅ Admin force-deleted \`${name}\`.`, ephemeral: true });
+      return interaction.reply({ content: `✅ Admin force-deleted \`${name}\`.`, flags: MessageFlags.Ephemeral });
     }
 
     if (sub === 'node-stats') {
