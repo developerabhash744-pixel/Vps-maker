@@ -289,7 +289,19 @@ class ContainerManager {
 
   async createWebTerminal(name) {
     const vps = db.getVPS(name);
-    if (vps && vps.webTerminalUrl) {
+    if (!vps) throw new Error('VPS not found in database.');
+    if (this.tunnels && this.tunnels[name] && this.tunnels[name].url) {
+      return this.tunnels[name].url;
+    }
+    if (vps.webPort) {
+      const url = await this.createPublicTunnel(name, vps.webPort);
+      if (url) {
+        db.setVPS(name, { ...vps, webTerminalUrl: url });
+        return url;
+      }
+      return this.getWebTerminalUrl(vps.webPort);
+    }
+    if (vps.webTerminalUrl) {
       return vps.webTerminalUrl;
     }
     throw new Error('Web terminal is not configured for this container.');

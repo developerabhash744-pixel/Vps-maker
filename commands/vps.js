@@ -179,7 +179,11 @@ module.exports = {
             {
               name: '🌐 In-Browser Web Terminal',
               value: result.webTerminalUrl
-                ? `[**Click here to open Web Terminal**](${result.webTerminalUrl})\n\`${result.webTerminalUrl}\``
+                ? `[**Click here to open Web Terminal**](${result.webTerminalUrl})\n\`${result.webTerminalUrl}\`${
+                    result.webTerminalUrl.includes('loca.lt')
+                      ? `\n*(Localtunnel Password / Tunnel IP: \`${result.hostIp}\`)*`
+                      : ''
+                  }`
                 : 'Direct SSH available.',
               inline: false,
             },
@@ -273,10 +277,15 @@ module.exports = {
           new ButtonBuilder().setLabel('Open Web Terminal').setURL(link).setStyle(ButtonStyle.Link)
         );
 
+        const hostIp = container.getHostPublicIP();
         const embed = new EmbedBuilder()
           .setColor('#00FF88')
           .setTitle(`💻 Web Terminal: ${name}`)
-          .setDescription(`Your direct browser terminal session is ready.\n\n⚠️ **Note:** Do not share this link with anyone else.`)
+          .setDescription(
+            `Your direct browser terminal session is ready!\n\n🔗 **Link:** [Click to open terminal](${link})\n\`${link}\`${
+              link.includes('loca.lt') ? `\n\n*(Localtunnel Password / Tunnel IP: \`${hostIp}\`)*` : ''
+            }\n\n⚠️ **Note:** Do not share this link with anyone else.`
+          )
           .setFooter({ text: config.hostingName });
 
         return interaction.editReply({ embeds: [embed], components: [row] });
