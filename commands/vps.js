@@ -147,25 +147,19 @@ module.exports = {
           plan: planKey,
           image: osImage,
           sshPort: result.sshPort,
+          webPort: result.webPort,
+          webTerminalUrl: result.webTerminalUrl,
           createdAt: Date.now(),
           expiresAt: Date.now() + plan.durationDays * 24 * 60 * 60 * 1000,
         });
 
-        // Generate Web Terminal link immediately
-        let terminalLink = null;
-        try {
-          terminalLink = await container.createWebTerminal(safeName);
-        } catch (e) {
-          console.warn('[Web Terminal Note]:', e.message);
-        }
-
         const components = [];
-        if (terminalLink) {
+        if (result.webTerminalUrl) {
           components.push(
             new ActionRowBuilder().addComponents(
               new ButtonBuilder()
-                .setLabel('🚀 Open Web Terminal')
-                .setURL(terminalLink)
+                .setLabel('🚀 Launch Web Terminal')
+                .setURL(result.webTerminalUrl)
                 .setStyle(ButtonStyle.Link)
             )
           );
@@ -183,14 +177,19 @@ module.exports = {
             { name: '🔒 Root Password', value: `\`${result.password}\``, inline: true },
             { name: '🔌 SSH Port', value: `\`${result.sshPort}\``, inline: true },
             {
-              name: '🌐 Direct Web Terminal',
-              value: terminalLink
-                ? `[**Click here to Launch Terminal**](${terminalLink})\n\`${terminalLink}\``
-                : 'Session generated. Use `/vps terminal` if needed.',
+              name: '🌐 In-Browser Web Terminal',
+              value: result.webTerminalUrl
+                ? `[**Click here to open Web Terminal**](${result.webTerminalUrl})\n\`${result.webTerminalUrl}\``
+                : 'Direct SSH available.',
+              inline: false,
+            },
+            {
+              name: '💻 Direct SSH Login',
+              value: `\`ssh root@${result.hostIp} -p ${result.sshPort}\``,
               inline: false,
             }
           )
-          .setFooter({ text: `${config.hostingName} • Click the button below to connect!` });
+          .setFooter({ text: `${config.hostingName} • Keep your password safe!` });
 
         return interaction.editReply({ embeds: [successEmbed], components });
       } catch (err) {
