@@ -8,27 +8,13 @@ class ContainerManager {
   constructor() {
     this.engine = this.detectEngine();
     this.cachedIP = null;
-    this.sshxSessions = {};
     this.tunnels = {};
-    this.ensureHostSshx();
+    this.ngrokListeners = {};
+    this.ensureHostTtyd();
   }
 
   run(command, options = {}) {
     return execSync(command, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], ...options });
-  }
-
-  ensureHostSshx() {
-    try {
-      this.run('command -v sshx');
-    } catch {
-      try {
-        this.run(
-          'curl -sSf https://sshx.io/get | sh -s -- -y 2>/dev/null || curl -sSf https://sshx.io/get | bash 2>/dev/null || true'
-        );
-      } catch (e) {
-        console.warn('[Host sshx install note]:', e.message);
-      }
-    }
   }
 
   ensureHostTtyd() {
@@ -125,58 +111,38 @@ class ContainerManager {
     return `http://${hostIp}:${webPort}`;
   }
 
-  // 1. Primary In-Browser Web Terminal via sshx.io (Zero-Config, Instant Web Shell)
-  startSshxSession(name) {
-    this.ensureHostSshx();
-    const cmd = this.engine === 'docker' ? `docker exec -it ${name} bash` : `lxc exec ${name} -- bash`;
-
-    return new Promise((resolve, reject) => {
-      try {
-        this.run(`pkill -f "sshx.*${name}" 2>/dev/null || true`);
-      } catch {}
-
-      const proc = spawn('sshx', ['-q', '--name', name, '--shell', cmd], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+  // 1. Ngrok Ingress (Native official SDK - unblockable by firewall)
+  async createNgrokTunnel(name, webPort) {
+    const token = config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN;
+    if (!token) return null;
+    try {
+      console.log(`[Ngrok] Opening tunnel for ${name} on port ${webPort}...`);
+      const ngrok = require('@ngrok/ngrok');
+      const listener = await ngrok.forward({
+        addr: webPort,
+        authtoken: token,
       });
-
-      let resolved = false;
-      let stdoutData = '';
-
-      proc.stdout.on('data', (chunk) => {
-        stdoutData += chunk.toString();
-        const match = stdoutData.match(/https:\/\/sshx\.io\/s\/[^\s\n\r]+/);
-        if (match && !resolved) {
-          resolved = true;
-          const url = match[0].trim();
-          this.sshxSessions[name] = { url, pid: proc.pid };
-          console.log(`[sshx.io Web Terminal for ${name}]: ${url}`);
-          resolve(url);
-        }
-      });
-
-      proc.stderr.on('data', (data) => {
-        console.warn(`[sshx stderr for ${name}]:`, data.toString().trim());
-      });
-
-      proc.on('error', (err) => {
-        if (!resolved) {
-          resolved = true;
-          reject(err);
-        }
-      });
-
-      setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          reject(new Error('sshx session timed out after 8s'));
-        }
-      }, 8000);
-    });
+      if (listener && listener.url()) {
+        const url = listener.url();
+        console.log(`[Ngrok Active for ${name}]: ${url}`);
+        this.ngrokListeners[name] = listener;
+        return url;
+      }
+    } catch (err) {
+      console.warn(`[Ngrok warning for ${name}]:`, err.message);
+    }
+    return null;
   }
 
-  // 2. Fallback public tunnel via localtunnel
+  // 2. Public Tunnel Manager
   async createPublicTunnel(name, webPort) {
+    // A. Priority 1: Ngrok
+    try {
+      const ngrokUrl = await this.createNgrokTunnel(name, webPort);
+      if (ngrokUrl) return ngrokUrl;
+    } catch {}
+
+    // B. Priority 2: LocalTunnel npm
     try {
       console.log(`[Public Tunnel] Opening LocalTunnel for ${name} on port ${webPort}...`);
       const localtunnel = require('localtunnel');
@@ -189,6 +155,8 @@ class ContainerManager {
     } catch (err) {
       console.warn(`[LocalTunnel warning for ${name}]:`, err.message);
     }
+
+    // C. Fallback: Host Direct IP
     return this.getWebTerminalUrl(webPort);
   }
 
@@ -198,6 +166,8 @@ class ContainerManager {
     const sshPort = this.getRandomPort(20000, 34000);
     const webPort = this.getRandomPort(34001, 49000);
     const hostIp = this.getHostPublicIP();
+
+    this.ensureHostTtyd();
 
     if (this.engine === 'docker') {
       try {
@@ -223,25 +193,13 @@ class ContainerManager {
         `;
         exec(`docker exec ${name} bash -c "${initScript.replace(/\n/g, ' ')}"`);
 
-        // 4. Primary: Start sshx.io web terminal session
-        let webTerminalUrl = null;
-        try {
-          webTerminalUrl = await this.startSshxSession(name);
-        } catch (err) {
-          console.warn(`[sshx.io warning for ${name}]:`, err.message);
-        }
+        // 4. Start Host-level ttyd attached directly to this container's interactive shell
+        exec(
+          `nohup ttyd -p ${webPort} -i 127.0.0.1 -c root:${rootPassword} -W docker exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
+        );
 
-        // 5. Fallback: Start ttyd & localtunnel if sshx is unavailable
-        if (!webTerminalUrl) {
-          try {
-            this.ensureHostTtyd();
-            exec(
-              `nohup ttyd -p ${webPort} -i 127.0.0.1 -c root:${rootPassword} -W docker exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
-            );
-            webTerminalUrl = await this.createPublicTunnel(name, webPort);
-          } catch {}
-        }
-
+        // 5. Open Public Web Tunnel (Ngrok / LocalTunnel)
+        let webTerminalUrl = await this.createPublicTunnel(name, webPort);
         if (!webTerminalUrl) {
           webTerminalUrl = this.getWebTerminalUrl(webPort);
         }
@@ -268,13 +226,7 @@ class ContainerManager {
         if (cpu) this.run(`${lxcBin} config set ${name} limits.cpu ${cpu}`);
         if (ram) this.run(`${lxcBin} config set ${name} limits.memory ${ram}`);
         this.run(`${lxcBin} exec ${name} -- bash -c "echo 'root:${rootPassword}' | chpasswd"`);
-
-        let webTerminalUrl = null;
-        try {
-          webTerminalUrl = await this.startSshxSession(name);
-        } catch {}
-
-        return { success: true, password: rootPassword, sshPort: 22, webPort: null, webTerminalUrl, hostIp };
+        return { success: true, password: rootPassword, sshPort: 22, webPort: null, webTerminalUrl: null, hostIp };
       } catch (err) {
         try {
           this.run(`${lxcBin} delete -f ${name}`);
@@ -296,12 +248,14 @@ class ContainerManager {
   stop(name) {
     if (this.engine === 'docker') {
       this.run(`docker stop ${name}`);
-      exec(`pkill -f "sshx.*${name}" 2>/dev/null || true`);
       exec(`pkill -f "ttyd.*${name}" 2>/dev/null || true`);
+      if (this.ngrokListeners[name]) {
+        try { this.ngrokListeners[name].close(); } catch {}
+        delete this.ngrokListeners[name];
+      }
     } else {
       const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
       this.run(`${lxcBin} stop ${name} --force`);
-      exec(`pkill -f "sshx.*${name}" 2>/dev/null || true`);
     }
   }
 
@@ -317,13 +271,15 @@ class ContainerManager {
   delete(name) {
     if (this.engine === 'docker') {
       this.run(`docker rm -f ${name}`);
-      exec(`pkill -f "sshx.*${name}" 2>/dev/null || true`);
       exec(`pkill -f "ttyd.*${name}" 2>/dev/null || true`);
       exec(`pkill -f "cloudflared.*${name}" 2>/dev/null || true`);
+      if (this.ngrokListeners[name]) {
+        try { this.ngrokListeners[name].close(); } catch {}
+        delete this.ngrokListeners[name];
+      }
     } else {
       const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
       this.run(`${lxcBin} delete -f ${name}`);
-      exec(`pkill -f "sshx.*${name}" 2>/dev/null || true`);
     }
   }
 
@@ -376,18 +332,9 @@ class ContainerManager {
     const vps = db.getVPS(name);
     if (!vps) throw new Error('VPS not found in database.');
 
-    // 1. Try launching or retrieving active sshx session
-    try {
-      const url = await this.startSshxSession(name);
-      if (url) {
-        db.setVPS(name, { ...vps, webTerminalUrl: url });
-        return url;
-      }
-    } catch (err) {
-      console.warn(`[createWebTerminal sshx error]:`, err.message);
+    if (this.ngrokListeners && this.ngrokListeners[name] && this.ngrokListeners[name].url()) {
+      return this.ngrokListeners[name].url();
     }
-
-    // 2. Fallback to existing tunnel or localtunnel
     if (this.tunnels && this.tunnels[name] && this.tunnels[name].url) {
       return this.tunnels[name].url;
     }
