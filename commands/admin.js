@@ -25,7 +25,13 @@ module.exports = {
 
   async execute(interaction) {
     const userId = interaction.user.id;
-    if (!config.adminIds.includes(userId) && !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    const isOwner = interaction.guild?.ownerId === userId;
+    const isConfigAdmin = config.adminIds.includes(userId);
+    const hasAdminPerm =
+      interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ||
+      interaction.member?.permissions?.has?.(PermissionFlagsBits.Administrator);
+
+    if (!isOwner && !isConfigAdmin && !hasAdminPerm) {
       return interaction.reply({ content: '❌ You do not have permission to use admin commands.', ephemeral: true });
     }
 

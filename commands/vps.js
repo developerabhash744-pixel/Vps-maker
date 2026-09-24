@@ -4,6 +4,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  PermissionFlagsBits,
 } = require('discord.js');
 const container = require('../containerManager');
 const db = require('../database');
@@ -205,7 +206,12 @@ module.exports = {
       return interaction.reply({ content: `❌ VPS \`${name}\` not found in database.`, ephemeral: true });
     }
 
-    const isAdmin = config.adminIds.includes(userId);
+    const isOwner = interaction.guild?.ownerId === userId;
+    const hasAdminPerm =
+      interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ||
+      interaction.member?.permissions?.has?.(PermissionFlagsBits.Administrator);
+    const isAdmin = isOwner || config.adminIds.includes(userId) || hasAdminPerm;
+
     if (vpsRecord.ownerId !== userId && !isAdmin) {
       return interaction.reply({ content: `❌ You do not own this VPS.`, ephemeral: true });
     }
