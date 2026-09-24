@@ -18,7 +18,9 @@ const clientOptions = {
 };
 
 if (config.proxyUrl) {
+  const wsGateway = config.proxyUrl.replace(/^http/, 'ws');
   clientOptions.rest = { api: `${config.proxyUrl}/api` };
+  clientOptions.ws = { gateway: wsGateway };
 }
 
 const client = new Client(clientOptions);

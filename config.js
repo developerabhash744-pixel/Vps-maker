@@ -4,7 +4,10 @@ module.exports = {
   token: (process.env.DISCORD_TOKEN || '').trim().replace(/^["']|["']$/g, ''),
   clientId: (process.env.CLIENT_ID || '').trim().replace(/^["']|["']$/g, ''),
   guildId: (process.env.GUILD_ID || '').trim().replace(/^["']|["']$/g, '') || null,
-  proxyUrl: (process.env.DISCORD_PROXY_URL || '').trim().replace(/^["']|["']$/g, '').replace(/\/+$/, ''),
+  proxyUrl: (process.env.DISCORD_PROXY_URL || 'https://silent-wind-4838.pabhash015.workers.dev')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/\/+$/, ''),
   serverIp: (process.env.SERVER_IP || '').trim().replace(/^["']|["']$/g, '') || null,
   ngrokAuthToken: (process.env.NGROK_AUTHTOKEN || '').trim().replace(/^["']|["']$/g, '') || null,
   adminIds: (process.env.ADMIN_IDS || '').split(',').map((id) => id.trim()).filter(Boolean),
