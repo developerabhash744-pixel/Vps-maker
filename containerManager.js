@@ -79,9 +79,9 @@ class ContainerManager {
         const memLimit = this.formatDockerMemory(ram);
         const cpuLimit = cpu || '1';
 
-        // 1. Launch container with exposed SSH port & persistent background process
+        // 1. Launch container with exposed SSH port, public DNS, and persistent background process
         this.run(
-          `docker run -d --name ${name} --hostname ${name} -p ${sshPort}:22 --memory="${memLimit}" --cpus="${cpuLimit}" ${targetImage} sleep infinity`
+          `docker run -d --name ${name} --hostname ${name} --dns 8.8.8.8 --dns 1.1.1.1 -p ${sshPort}:22 --memory="${memLimit}" --cpus="${cpuLimit}" ${targetImage} sleep infinity`
         );
 
         // 2. Set root password
@@ -214,17 +214,18 @@ class ContainerManager {
     return new Promise((resolve, reject) => {
       const script = `
         export PATH="/usr/local/bin:/root/.local/bin:$PATH"
-        pkill -9 -f sshx 2>/dev/null || true
-        if ! command -v sshx >/dev/null 2>&1; then
+        if [ ! -x /usr/local/bin/sshx ]; then
           apt-get update -y >/dev/null 2>&1 && apt-get install -y curl ca-certificates >/dev/null 2>&1
           curl -sSf https://sshx.io/get | sh >/dev/null 2>&1
-          cp /root/.local/bin/sshx /usr/local/bin/sshx 2>/dev/null || true
+          cp -f /root/.local/bin/sshx /usr/local/bin/sshx 2>/dev/null || true
+          chmod +x /usr/local/bin/sshx 2>/dev/null || true
         fi
+        pkill -9 -f sshx 2>/dev/null || true
         rm -f /tmp/.sshx.log
-        nohup sshx > /tmp/.sshx.log 2>&1 &
-        for i in 1 2 3 4 5 6 7 8 9 10; do
+        nohup /usr/local/bin/sshx > /tmp/.sshx.log 2>&1 &
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
           sleep 1
-          LINK=$(grep -o 'https://sshx.io/s/[^ ]*' /tmp/.sshx.log 2>/dev/null | head -n 1)
+          LINK=$(grep -o 'https://sshx.io/s/[^ "]*' /tmp/.sshx.log 2>/dev/null | head -n 1)
           if [ -n "$LINK" ]; then
             echo "$LINK"
             exit 0
@@ -238,13 +239,14 @@ class ContainerManager {
           ? `docker exec ${name} bash -c "${script.replace(/\n/g, ' ')}"`
           : `${fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc'} exec ${name} -- bash -c "${script.replace(/\n/g, ' ')}"`;
 
-      exec(execCmd, { timeout: 25000 }, (err, stdout) => {
-        const link = (stdout || '').trim();
-        const matched = link.match(/https:\/\/sshx\.io\/s\/[^\s\x1b]+/);
+      exec(execCmd, { timeout: 35000 }, (err, stdout) => {
+        const output = (stdout || '').trim();
+        const matched = output.match(/https:\/\/sshx\.io\/s\/[^\s\x1b"']+/);
         if (matched && matched[0]) {
           resolve(matched[0]);
         } else {
-          reject(new Error(link || 'Web terminal session could not be established.'));
+          console.warn(`[sshx output]: ${output}`);
+          reject(new Error(output || 'Web terminal session could not be established.'));
         }
       });
     });
