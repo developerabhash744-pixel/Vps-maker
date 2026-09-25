@@ -115,12 +115,31 @@ export default {
     modifiedHeaders.delete('CF-Ray');
     modifiedHeaders.delete('X-Forwarded-For');
 
-    return fetch(targetUrl.toString(), {
+    const response = await fetch(targetUrl.toString(), {
       method: request.method,
       headers: modifiedHeaders,
       body: isWebSocket || ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
       redirect: 'follow',
     });
+
+    if (isWebSocket) {
+      return response;
+    }
+
+    // Intercept Discord gateway endpoints and rewrite the gateway URL to our Worker
+    if (url.pathname.includes('/gateway')) {
+      const text = await response.text();
+      const rewritten = text.replace(/wss:\/\/gateway\.discord\.gg/g, `wss://${url.host}`);
+      const newHeaders = new Headers(response.headers);
+      newHeaders.delete('content-length');
+      return new Response(rewritten, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: newHeaders,
+      });
+    }
+
+    return response;
   },
 };
 
