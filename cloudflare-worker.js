@@ -250,8 +250,15 @@ function getTerminalHTML(name, token) {
       }, 300);
     };
 
-    ws.onmessage = (e) => {
-      term.write(e.data);
+    ws.onmessage = async (e) => {
+      if (typeof e.data === 'string') {
+        term.write(e.data);
+      } else if (e.data instanceof ArrayBuffer) {
+        term.write(new TextDecoder().decode(e.data));
+      } else if (e.data instanceof Blob) {
+        const text = await e.data.text();
+        term.write(text);
+      }
     };
 
     ws.onclose = () => {

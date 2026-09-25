@@ -164,10 +164,10 @@ class ContainerManager {
         });
 
         proc.stdout.on('data', (d) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(d);
+          if (ws.readyState === WebSocket.OPEN) ws.send(d.toString('utf8'));
         });
         proc.stderr.on('data', (d) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(d);
+          if (ws.readyState === WebSocket.OPEN) ws.send(d.toString('utf8'));
         });
 
         ws.on('message', (msg) => {
