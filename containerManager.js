@@ -123,7 +123,15 @@ class ContainerManager {
       const WebSocket = require('ws');
       const ws = new WebSocket(wsUrl);
 
+      let pingTimer = null;
+
       ws.on('open', () => {
+        pingTimer = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try { ws.ping(); } catch {}
+          }
+        }, 15000);
+
         const innerCmd = this.engine === 'docker'
           ? `docker exec -it ${name} bash`
           : `lxc exec ${name} -- bash`;
@@ -150,11 +158,13 @@ class ContainerManager {
         });
 
         ws.on('close', () => {
+          if (pingTimer) clearInterval(pingTimer);
           try { proc.kill('SIGKILL'); } catch {}
           delete this.workerBridges[name];
         });
 
         proc.on('close', () => {
+          if (pingTimer) clearInterval(pingTimer);
           try { ws.close(); } catch {}
           delete this.workerBridges[name];
         });
@@ -163,6 +173,7 @@ class ContainerManager {
       });
 
       ws.on('error', (err) => {
+        if (pingTimer) clearInterval(pingTimer);
         console.warn(`[Worker Bridge error for ${name}]:`, err.message);
       });
 
