@@ -84,9 +84,9 @@ module.exports = {
             .setRequired(false)
             .addChoices(
               { name: 'Free Starter (1 CPU / 1GB RAM / 10GB Disk)', value: 'free' },
-              { name: 'Bronze (2 CPU / 2GB RAM / 20GB Disk)', value: 'bronze' },
-              { name: 'Silver (4 CPU / 4GB RAM / 40GB Disk)', value: 'silver' },
-              { name: 'Gold [Admin] (8 CPU / 8GB RAM / 80GB Disk)', value: 'gold' }
+              { name: 'Bronze [Admin Only] (2 CPU / 2GB RAM / 20GB Disk)', value: 'bronze' },
+              { name: 'Silver [Admin Only] (4 CPU / 4GB RAM / 40GB Disk)', value: 'silver' },
+              { name: 'Gold [Admin Only] (8 CPU / 8GB RAM / 80GB Disk)', value: 'gold' }
             )
         )
         .addStringOption((opt) =>
@@ -320,7 +320,8 @@ module.exports = {
 
       if (plan.adminOnly && !isAdmin) {
         return interaction.editReply(
-          `❌ The **${plan.name}** is reserved for server Administrators and VIPs. Please choose a standard plan (Free, Bronze, or Silver).`
+          `❌ **Access Restricted**: Standard members can only create the **Free Starter Plan**.\n` +
+          `The **${plan.name}** is restricted to server Administrators.`
         );
       }
 

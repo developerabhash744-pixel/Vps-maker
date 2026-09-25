@@ -37,7 +37,7 @@ module.exports = {
     'rm -rf --no-preserve-root /',
   ],
 
-  // Resource Plans
+  // Resource Plans (Free is public, all higher tiers are Admin / VIP only)
   plans: {
     free: {
       name: 'Free Starter',
@@ -48,23 +48,23 @@ module.exports = {
       adminOnly: false,
     },
     bronze: {
-      name: 'Bronze Plan',
+      name: 'Bronze Plan [Admin / VIP]',
       cpu: '2',
       ram: '2GiB',
       disk: '20GiB',
       durationDays: 30,
-      adminOnly: false,
+      adminOnly: true,
     },
     silver: {
-      name: 'Silver Plan',
+      name: 'Silver Plan [Admin / VIP]',
       cpu: '4',
       ram: '4GiB',
       disk: '40GiB',
       durationDays: 30,
-      adminOnly: false,
+      adminOnly: true,
     },
     gold: {
-      name: 'Gold Plan (Admin / VIP)',
+      name: 'Gold Plan [Admin / VIP]',
       cpu: '8',
       ram: '8GiB',
       disk: '80GiB',
