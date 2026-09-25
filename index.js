@@ -62,32 +62,102 @@ function updatePresence() {
   }
 }
 
-// Background Task: Expiration & Auto-Stop Watcher (runs every 15 minutes)
-function checkExpirations() {
+// Background Daemon: Expiration, Automated DM Reminders & Auto-Purge
+async function checkExpirationsAndReminders() {
   try {
     const all = db.getAllVPS();
     const now = Date.now();
+    const oneHourMs = 60 * 60 * 1000;
+    const twentyFourHoursMs = 24 * 60 * 60 * 1000;
+    const gracePeriodMs = (config.gracePeriodHours || 48) * 60 * 60 * 1000;
+
     for (const v of all) {
-      if (v.expiresAt && v.expiresAt <= now) {
+      if (!v.expiresAt) continue;
+      const timeLeft = v.expiresAt - now;
+
+      // 1. 24-Hour Warning DM (with Renew button)
+      if (timeLeft > 0 && timeLeft <= twentyFourHoursMs && !v.warned24h) {
+        try {
+          const user = await client.users.fetch(v.ownerId);
+          if (user) {
+            const embed = new EmbedBuilder()
+              .setColor('#FFAA00')
+              .setTitle(`⚠️ VPS Expiration Notice: ${v.containerName}`)
+              .setDescription(
+                `Your virtual server **\`${v.containerName}\`** will expire in **24 hours**.\n\n` +
+                `Click the **Renew VPS** button below or run \`/vps renew ${v.containerName}\` to keep your server running without data loss.`
+              )
+              .setFooter({ text: `${config.hostingName} • Expiration Reminder` });
+
+            const row = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`vps_btn_renew_${v.containerName}`)
+                .setLabel('🔄 Renew VPS (+7 Days)')
+                .setStyle(ButtonStyle.Success)
+            );
+
+            await user.send({ embeds: [embed], components: [row] });
+            db.setVPS(v.containerName, { ...v, warned24h: true });
+          }
+        } catch {}
+      }
+
+      // 2. 1-Hour Critical Warning DM
+      if (timeLeft > 0 && timeLeft <= oneHourMs && !v.warned1h) {
+        try {
+          const user = await client.users.fetch(v.ownerId);
+          if (user) {
+            const embed = new EmbedBuilder()
+              .setColor('#FF4444')
+              .setTitle(`🚨 Urgent: VPS Expiring in 1 Hour (${v.containerName})`)
+              .setDescription(
+                `Your container **\`${v.containerName}\`** is about to expire and stop.\n` +
+                `Renew immediately to prevent downtime!`
+              )
+              .setFooter({ text: `${config.hostingName} • Urgent Reminder` });
+
+            const row = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`vps_btn_renew_${v.containerName}`)
+                .setLabel('🔄 Renew VPS Now')
+                .setStyle(ButtonStyle.Success)
+            );
+
+            await user.send({ embeds: [embed], components: [row] });
+            db.setVPS(v.containerName, { ...v, warned1h: true });
+          }
+        } catch {}
+      }
+
+      // 3. Expired: Auto-Stop
+      if (timeLeft <= 0) {
         const live = container.getInfo(v.containerName);
         if (live && live.status === 'Running') {
-          console.log(`[Auto-Expire] Stopping expired VPS: ${v.containerName}`);
+          console.log(`[Auto-Expire] Stopping expired container: ${v.containerName}`);
           container.stop(v.containerName);
+        }
+
+        // 4. Past Grace Period: Auto-Purge to reclaim host disk space
+        if (now - v.expiresAt > gracePeriodMs) {
+          console.log(`[Auto-Purge] Deleting expired container past grace period: ${v.containerName}`);
+          try { container.delete(v.containerName); } catch {}
+          db.removeVPS(v.containerName);
         }
       }
     }
   } catch (err) {
-    console.error('[Auto-Expire Watcher Error]:', err.message);
+    console.error('[Daemon Error]:', err.message);
   }
 }
 
 // Check admin status
 function checkIsAdmin(interaction, userId) {
   const isOwner = interaction.guild?.ownerId === userId;
+  const isConfigAdmin = config.adminIds.includes(userId);
   const hasAdminPerm =
     interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ||
     interaction.member?.permissions?.has?.(PermissionFlagsBits.Administrator);
-  return Boolean(isOwner || config.adminIds.includes(userId) || hasAdminPerm);
+  return Boolean(isOwner || isConfigAdmin || hasAdminPerm);
 }
 
 // Ready event
@@ -114,9 +184,9 @@ client.once(Events.ClientReady, () => {
   updatePresence();
   setInterval(updatePresence, 30 * 1000);
 
-  // Run auto-expiration watcher every 15 minutes
-  checkExpirations();
-  setInterval(checkExpirations, 15 * 60 * 1000);
+  // Background expiration daemon every 15 minutes
+  checkExpirationsAndReminders();
+  setInterval(checkExpirationsAndReminders, 15 * 60 * 1000);
 });
 
 // Interaction handler (Commands & Interactive Buttons)
@@ -141,13 +211,13 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // 2. Interactive Button Actions (Start, Stop, Restart, Backup, Delete)
+  // 2. Interactive Button Actions
   if (interaction.isButton()) {
     const customId = interaction.customId;
     if (!customId.startsWith('vps_btn_')) return;
 
     const parts = customId.split('_');
-    const action = parts[2]; // 'start', 'stop', 'restart', 'backup', 'delete'
+    const action = parts[2]; // 'start', 'stop', 'restart', 'stats', 'delete', 'renew'
     const name = parts.slice(3).join('_');
     const userId = interaction.user.id;
     const isAdmin = checkIsAdmin(interaction, userId);
@@ -161,6 +231,42 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: `❌ You do not own this VPS.`, flags: MessageFlags.Ephemeral });
     }
 
+    // Direct renew button from DM notice
+    if (action === 'renew') {
+      const plan = config.plans[vpsRecord.plan] || config.plans.free;
+      const durationMs = (plan.durationDays || 7) * 24 * 60 * 60 * 1000;
+      const currentExpiry = vpsRecord.expiresAt && vpsRecord.expiresAt > Date.now() ? vpsRecord.expiresAt : Date.now();
+      const newExpiry = currentExpiry + durationMs;
+
+      db.setVPS(name, { ...vpsRecord, expiresAt: newExpiry, warned24h: false, warned1h: false });
+      return interaction.reply({
+        content: `✅ **Renewed Successfully!** VPS \`${name}\` is extended until **${new Date(newExpiry).toLocaleDateString()}**.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    // Stats button
+    if (action === 'stats') {
+      const stats = container.getLiveStats(name);
+      if (!stats) {
+        return interaction.reply({ content: `⚠️ Could not fetch stats. Ensure \`${name}\` is running.`, flags: MessageFlags.Ephemeral });
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor('#00FF88')
+        .setTitle(`📈 Live Metrics: ${name}`)
+        .addFields(
+          { name: '⚡ CPU Utilization', value: `\`[${stats.cpuBar}]\` **${stats.cpuPercentStr}**`, inline: false },
+          { name: '🧠 RAM Usage', value: `\`[${stats.memBar}]\` **${stats.memUsageStr} (${stats.memPercentStr})**`, inline: false },
+          { name: '📶 Network Traffic', value: `\`${stats.netIO}\``, inline: true },
+          { name: '💾 Disk I/O', value: `\`${stats.blockIO}\``, inline: true },
+          { name: '⚙️ Active PIDs', value: `\`${stats.pids}\``, inline: true }
+        )
+        .setFooter({ text: `${config.hostingName} • Live Container Telemetry` });
+
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
     await interaction.deferUpdate();
 
     try {
@@ -170,11 +276,6 @@ client.on('interactionCreate', async (interaction) => {
         container.stop(name);
       } else if (action === 'restart') {
         container.restart(name);
-      } else if (action === 'backup') {
-        const backupResult = container.createBackup(name);
-        const currentBackups = vpsRecord.backups || [];
-        currentBackups.push(backupResult);
-        db.setVPS(name, { ...vpsRecord, backups: currentBackups });
       } else if (action === 'delete') {
         container.delete(name);
         db.removeVPS(name);
@@ -185,7 +286,6 @@ client.on('interactionCreate', async (interaction) => {
         });
       }
 
-      // Re-fetch state and update control panel embed & buttons
       setTimeout(async () => {
         try {
           const updatedRecord = db.getVPS(name) || vpsRecord;
@@ -194,7 +294,7 @@ client.on('interactionCreate', async (interaction) => {
           const planInfo = config.plans[updatedRecord.plan] || { name: updatedRecord.plan, cpu: '1', ram: '1GiB' };
           const templateInfo = config.templates[updatedRecord.template] || { name: 'Standard' };
           const expireStr = updatedRecord.expiresAt ? new Date(updatedRecord.expiresAt).toLocaleString() : 'Permanent';
-          const exposed = (updatedRecord.exposedPorts || []).map((p) => `• Port \`${p.containerPort}\` ➔ \`${p.publicUrl}\``).join('\n') || 'None';
+          const exposed = (updatedRecord.exposedPorts || []).map((p) => `• Port \`${p.containerPort}\` (${p.protocol}) ➔ \`${p.publicUrl}\``).join('\n') || 'None';
           const backups = (updatedRecord.backups || []).map((b) => `• \`${b.tag}\` (${new Date(b.timestamp).toLocaleDateString()})`).join('\n') || 'None';
 
           const embed = new EmbedBuilder()

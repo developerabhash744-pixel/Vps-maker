@@ -40,9 +40,9 @@ function buildControlButtons(name, isRunning = true) {
       .setStyle(ButtonStyle.Primary)
       .setDisabled(!isRunning),
     new ButtonBuilder()
-      .setCustomId(`vps_btn_backup_${name}`)
-      .setLabel('Snapshot')
-      .setEmoji('📸')
+      .setCustomId(`vps_btn_stats_${name}`)
+      .setLabel('Stats')
+      .setEmoji('📊')
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`vps_btn_delete_${name}`)
@@ -57,7 +57,8 @@ module.exports = {
   buildControlButtons,
   data: new SlashCommandBuilder()
     .setName('vps')
-    .setDescription('Manage your virtual private server (VPS)')
+    .setDescription('Complete Virtual Private Server (VPS) Management')
+    // 1. CREATE
     .addSubcommand((sub) =>
       sub
         .setName('create')
@@ -103,102 +104,196 @@ module.exports = {
             )
         )
     )
+    // 2. LIST
     .addSubcommand((sub) =>
       sub.setName('list').setDescription('List all your active VPS instances')
     )
+    // 3. INFO
     .addSubcommand((sub) =>
       sub
         .setName('info')
         .setDescription('Show detailed information, control panel, and live stats of your VPS')
-        .addStringOption((opt) =>
-          opt.setName('name').setDescription('Container name').setRequired(true)
-        )
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
     )
+    // 4. STATS
+    .addSubcommand((sub) =>
+      sub
+        .setName('stats')
+        .setDescription('View real-time CPU, RAM, Disk, and Network I/O metrics')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
+    )
+    // 5. TERMINAL
     .addSubcommand((sub) =>
       sub
         .setName('terminal')
         .setDescription('Get a secure web browser terminal link for your VPS')
-        .addStringOption((opt) =>
-          opt.setName('name').setDescription('Container name').setRequired(true)
-        )
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
     )
+    // 6. EXEC
     .addSubcommand((sub) =>
       sub
-        .setName('start')
-        .setDescription('Start a stopped VPS')
-        .addStringOption((opt) =>
-          opt.setName('name').setDescription('Container name').setRequired(true)
-        )
+        .setName('exec')
+        .setDescription('Execute a quick bash command inside your container')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
+        .addStringOption((opt) => opt.setName('command').setDescription('Bash command to execute').setRequired(true))
     )
+    // 7. LOGS
     .addSubcommand((sub) =>
       sub
-        .setName('stop')
-        .setDescription('Stop a running VPS')
-        .addStringOption((opt) =>
-          opt.setName('name').setDescription('Container name').setRequired(true)
-        )
+        .setName('logs')
+        .setDescription('View the latest system / console output logs')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
+        .addIntegerOption((opt) => opt.setName('lines').setDescription('Number of lines (default: 30)').setRequired(false))
     )
+    // 8. SSH KEY
     .addSubcommand((sub) =>
       sub
-        .setName('restart')
-        .setDescription('Restart your VPS')
-        .addStringOption((opt) =>
-          opt.setName('name').setDescription('Container name').setRequired(true)
-        )
+        .setName('sshkey')
+        .setDescription('Add your SSH public key for passwordless terminal login')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
+        .addStringOption((opt) => opt.setName('key').setDescription('Your public key (ssh-rsa / ssh-ed25519)').setRequired(true))
+    )
+    // 9. START, STOP, RESTART, DELETE
+    .addSubcommand((sub) =>
+      sub.setName('start').setDescription('Start a stopped VPS')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
     )
     .addSubcommand((sub) =>
-      sub
-        .setName('renew')
-        .setDescription('Renew / extend your VPS expiration date')
+      sub.setName('stop').setDescription('Stop a running VPS')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub.setName('restart').setDescription('Restart your VPS')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub.setName('delete').setDescription('Permanently delete your VPS')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
+    )
+    // 10. RENEW
+    .addSubcommand((sub) =>
+      sub.setName('renew').setDescription('Renew / extend your VPS expiration date')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
+    )
+    // 11. REBUILD
+    .addSubcommand((sub) =>
+      sub.setName('rebuild').setDescription('Factory reset your VPS with a fresh OS image')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
         .addStringOption((opt) =>
-          opt.setName('name').setDescription('Container name').setRequired(true)
+          opt.setName('os').setDescription('New OS image (optional)').setRequired(false)
+            .addChoices(
+              { name: 'Ubuntu 24.04 LTS (Latest)', value: 'ubuntu:24.04' },
+              { name: 'Ubuntu 22.04 LTS', value: 'ubuntu:22.04' },
+              { name: 'Debian 12 Bookworm', value: 'images:debian/12' }
+            )
         )
     )
+    // 12. EXPOSE PORT
     .addSubcommand((sub) =>
       sub
         .setName('expose')
         .setDescription('Forward / expose a container port to a public host port')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
+        .addIntegerOption((opt) => opt.setName('port').setDescription('Internal port (e.g. 3000, 8080, 25565)').setRequired(true))
         .addStringOption((opt) =>
-          opt.setName('name').setDescription('Container name').setRequired(true)
-        )
-        .addIntegerOption((opt) =>
-          opt.setName('port').setDescription('Internal container port (e.g. 3000, 8080, 25565)').setRequired(true)
+          opt.setName('protocol').setDescription('Protocol (TCP or UDP)').setRequired(false)
+            .addChoices({ name: 'TCP (Web / SSH / API)', value: 'tcp' }, { name: 'UDP (Game / Voice)', value: 'udp' })
         )
     )
+    // 13. BACKUP & RESTORE
     .addSubcommand((sub) =>
-      sub
-        .setName('backup')
-        .setDescription('Create an instant snapshot backup of your VPS')
-        .addStringOption((opt) =>
-          opt.setName('name').setDescription('Container name').setRequired(true)
-        )
+      sub.setName('backup').setDescription('Create an instant snapshot backup of your VPS')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
     )
     .addSubcommand((sub) =>
-      sub
-        .setName('restore')
-        .setDescription('Restore your VPS from a previous snapshot backup')
+      sub.setName('restore').setDescription('Restore your VPS from a previous snapshot backup')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
+        .addStringOption((opt) => opt.setName('tag').setDescription('Backup tag to restore').setRequired(true))
+    )
+    // 14. UPGRADE PLAN
+    .addSubcommand((sub) =>
+      sub.setName('upgrade').setDescription('Upgrade your VPS resource plan')
+        .addStringOption((opt) => opt.setName('name').setDescription('Container name').setRequired(true))
         .addStringOption((opt) =>
-          opt.setName('name').setDescription('Container name').setRequired(true)
-        )
-        .addStringOption((opt) =>
-          opt.setName('tag').setDescription('Backup tag to restore').setRequired(true)
+          opt.setName('plan').setDescription('Target Plan').setRequired(true)
+            .addChoices(
+              { name: 'Bronze Plan (2 CPU / 2GB RAM / 250 Coins)', value: 'bronze' },
+              { name: 'Silver Plan (4 CPU / 4GB RAM / 500 Coins)', value: 'silver' }
+            )
         )
     )
-    .addSubcommand((sub) =>
-      sub
-        .setName('delete')
-        .setDescription('Permanently delete your VPS')
-        .addStringOption((opt) =>
-          opt.setName('name').setDescription('Container name').setRequired(true)
-        )
-    ),
+    // 15. ECONOMY & REWARDS
+    .addSubcommand((sub) => sub.setName('daily').setDescription('Claim your daily 50 coins reward'))
+    .addSubcommand((sub) => sub.setName('economy').setDescription('Check your coin balance & economy profile'))
+    .addSubcommand((sub) => sub.setName('leaderboard').setDescription('View top coin holders in the server')),
 
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
     const userId = interaction.user.id;
     const isAdmin = checkIsAdmin(interaction, userId);
 
+    // =========================================================================
+    // Economy Commands: /vps daily, /vps economy, /vps leaderboard
+    // =========================================================================
+    if (sub === 'daily') {
+      const user = db.getUser(userId);
+      const now = Date.now();
+      const oneDayMs = 24 * 60 * 60 * 1000;
+
+      if (user.lastDaily && now - user.lastDaily < oneDayMs) {
+        const remainingHours = Math.ceil((oneDayMs - (now - user.lastDaily)) / (60 * 60 * 1000));
+        return interaction.reply({
+          content: `⏳ You have already claimed your daily reward. Come back in **${remainingHours} hours**!`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const reward = config.dailyRewardCoins || 50;
+      const newBal = db.addCoins(userId, reward);
+      db.updateUser(userId, { lastDaily: now });
+
+      return interaction.reply({
+        content: `🎉 **Daily Claimed!** You received **+${reward} coins**!\n💰 Current Balance: **${newBal} coins**.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    if (sub === 'economy') {
+      const user = db.getUser(userId);
+      const userVPS = db.getUserVPSList(userId);
+
+      const embed = new EmbedBuilder()
+        .setColor('#FFAA00')
+        .setTitle(`💰 Economy Profile: ${interaction.user.username}`)
+        .addFields(
+          { name: '🪙 Coin Balance', value: `**${user.coins || 0} Coins**`, inline: true },
+          { name: '🖥️ Active VPS', value: `**${userVPS.length} Containers**`, inline: true },
+          { name: '🎁 Daily Reward', value: '`/vps daily` (50 Coins)', inline: true },
+          { name: '🛍️ Store Costs', value: `• 7-Day Renewal: **${config.costs.renew7Days} Coins**\n• Bronze Upgrade: **${config.costs.upgradeBronze} Coins**\n• Silver Upgrade: **${config.costs.upgradeSilver} Coins**`, inline: false }
+        )
+        .setFooter({ text: config.hostingName });
+
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    if (sub === 'leaderboard') {
+      const top = db.getLeaderboard();
+      const embed = new EmbedBuilder()
+        .setColor(config.brandColor)
+        .setTitle('🏆 Top Coin Holders')
+        .setDescription(
+          top
+            .map((u, idx) => `**#${idx + 1}** <@${u.userId}> — **${u.coins} coins**`)
+            .join('\n') || 'No users yet.'
+        )
+        .setFooter({ text: config.hostingName });
+
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    // =========================================================================
     // 1. CREATE
+    // =========================================================================
     if (sub === 'create') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -209,7 +304,6 @@ module.exports = {
         return interaction.editReply('❌ Container name must be 3-20 characters (alphanumeric and dashes only).');
       }
 
-      // Quota limit check: Standard users are limited to config.maxVpsPerUser
       const userVpsCount = db.getUserVPSList(userId).length;
       if (!isAdmin && userVpsCount >= config.maxVpsPerUser) {
         return interaction.editReply(
@@ -217,7 +311,6 @@ module.exports = {
         );
       }
 
-      // Check if container name is already taken in DB
       if (db.getVPS(safeName)) {
         return interaction.editReply(`❌ A VPS named \`${safeName}\` already exists. Please choose another name.`);
       }
@@ -225,7 +318,6 @@ module.exports = {
       const planKey = interaction.options.getString('plan') || 'free';
       const plan = config.plans[planKey] || config.plans.free;
 
-      // Admin-only plan security check
       if (plan.adminOnly && !isAdmin) {
         return interaction.editReply(
           `❌ The **${plan.name}** is reserved for server Administrators and VIPs. Please choose a standard plan (Free, Bronze, or Silver).`
@@ -258,7 +350,6 @@ module.exports = {
           templateKey,
         });
 
-        // Save record to DB
         db.setVPS(safeName, {
           containerName: safeName,
           ownerId: userId,
@@ -279,23 +370,12 @@ module.exports = {
         const btnRow = new ActionRowBuilder();
         if (result.webTerminalUrl) {
           btnRow.addComponents(
-            new ButtonBuilder()
-              .setLabel('🚀 Launch Web Terminal')
-              .setURL(result.webTerminalUrl)
-              .setStyle(ButtonStyle.Link)
+            new ButtonBuilder().setLabel('🚀 Launch Web Terminal').setURL(result.webTerminalUrl).setStyle(ButtonStyle.Link)
           );
         }
         btnRow.addComponents(
-          new ButtonBuilder()
-            .setCustomId(`vps_btn_restart_${safeName}`)
-            .setLabel('Restart')
-            .setEmoji('🔄')
-            .setStyle(ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId(`vps_btn_stop_${safeName}`)
-            .setLabel('Stop')
-            .setEmoji('⏹️')
-            .setStyle(ButtonStyle.Secondary)
+          new ButtonBuilder().setCustomId(`vps_btn_restart_${safeName}`).setLabel('Restart').setEmoji('🔄').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId(`vps_btn_stop_${safeName}`).setLabel('Stop').setEmoji('⏹️').setStyle(ButtonStyle.Secondary)
         );
         components.push(btnRow);
 
@@ -359,7 +439,9 @@ module.exports = {
       }
     }
 
+    // =========================================================================
     // 2. LIST
+    // =========================================================================
     if (sub === 'list') {
       const vpsList = db.getUserVPSList(userId);
       if (vpsList.length === 0) {
@@ -401,14 +483,16 @@ module.exports = {
       return interaction.reply({ content: `❌ You do not own this VPS.`, flags: MessageFlags.Ephemeral });
     }
 
+    // =========================================================================
     // 3. INFO & CONTROL PANEL
+    // =========================================================================
     if (sub === 'info') {
       const live = container.getInfo(name);
       const isRunning = live?.status === 'Running';
       const expireStr = vpsRecord.expiresAt ? new Date(vpsRecord.expiresAt).toLocaleString() : 'Permanent';
       const planInfo = config.plans[vpsRecord.plan] || { name: vpsRecord.plan, cpu: '1', ram: '1GiB' };
       const templateInfo = config.templates[vpsRecord.template] || { name: 'Standard' };
-      const exposed = (vpsRecord.exposedPorts || []).map((p) => `• Port \`${p.containerPort}\` ➔ \`${p.publicUrl}\``).join('\n') || 'None';
+      const exposed = (vpsRecord.exposedPorts || []).map((p) => `• Port \`${p.containerPort}\` (${p.protocol}) ➔ \`${p.publicUrl}\``).join('\n') || 'None';
       const backups = (vpsRecord.backups || []).map((b) => `• \`${b.tag}\` (${new Date(b.timestamp).toLocaleDateString()})`).join('\n') || 'None';
 
       const embed = new EmbedBuilder()
@@ -434,10 +518,7 @@ module.exports = {
       if (vpsRecord.webTerminalUrl) {
         components.push(
           new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setLabel('🚀 Open Web Terminal')
-              .setURL(vpsRecord.webTerminalUrl)
-              .setStyle(ButtonStyle.Link)
+            new ButtonBuilder().setLabel('🚀 Open Web Terminal').setURL(vpsRecord.webTerminalUrl).setStyle(ButtonStyle.Link)
           )
         );
       }
@@ -445,7 +526,101 @@ module.exports = {
       return interaction.reply({ embeds: [embed], components, flags: MessageFlags.Ephemeral });
     }
 
-    // 4. TERMINAL
+    // =========================================================================
+    // 4. STATS (Live ASCII Progress Bars)
+    // =========================================================================
+    if (sub === 'stats') {
+      const stats = container.getLiveStats(name);
+      if (!stats) {
+        return interaction.reply({
+          content: `⚠️ Could not fetch live stats for \`${name}\`. Ensure the container is running.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor('#00FF88')
+        .setTitle(`📈 Live Metrics: ${name}`)
+        .addFields(
+          {
+            name: '⚡ CPU Utilization',
+            value: `\`[${stats.cpuBar}]\` **${stats.cpuPercentStr}**`,
+            inline: false,
+          },
+          {
+            name: '🧠 RAM Usage',
+            value: `\`[${stats.memBar}]\` **${stats.memUsageStr} (${stats.memPercentStr})**`,
+            inline: false,
+          },
+          { name: '📶 Network Traffic', value: `\`${stats.netIO}\``, inline: true },
+          { name: '💾 Disk I/O', value: `\`${stats.blockIO}\``, inline: true },
+          { name: '⚙️ Active PIDs', value: `\`${stats.pids}\``, inline: true }
+        )
+        .setFooter({ text: `${config.hostingName} • Live Container Telemetry` });
+
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    // =========================================================================
+    // 5. EXEC (Quick Remote Runner)
+    // =========================================================================
+    if (sub === 'exec') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const cmd = interaction.options.getString('command');
+
+      try {
+        const result = await container.execCommand(name, cmd);
+        const output = result.stdout || result.stderr || '(No output produced)';
+        const safeOutput = output.length > 1800 ? output.substring(0, 1800) + '\n...[Output truncated]' : output;
+
+        const embed = new EmbedBuilder()
+          .setColor(result.exitCode === 0 ? '#00FF88' : '#FF4444')
+          .setTitle(`💻 Exec: \`${cmd}\``)
+          .setDescription(`\`\`\`bash\n${safeOutput}\n\`\`\``)
+          .setFooter({ text: `Exit Code: ${result.exitCode} • Executed in ${result.duration}ms` });
+
+        return interaction.editReply({ embeds: [embed] });
+      } catch (err) {
+        return interaction.editReply(`❌ Execution error: ${err.message}`);
+      }
+    }
+
+    // =========================================================================
+    // 6. LOGS
+    // =========================================================================
+    if (sub === 'logs') {
+      const lines = interaction.options.getInteger('lines') || 30;
+      const logs = container.getLogs(name, lines);
+      const safeLogs = logs.length > 1900 ? logs.substring(logs.length - 1900) : logs;
+
+      const embed = new EmbedBuilder()
+        .setColor(config.brandColor)
+        .setTitle(`📜 Container Logs: ${name} (Last ${lines} lines)`)
+        .setDescription(`\`\`\`text\n${safeLogs}\n\`\`\``)
+        .setFooter({ text: config.hostingName });
+
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    // =========================================================================
+    // 7. SSH KEY
+    // =========================================================================
+    if (sub === 'sshkey') {
+      const key = interaction.options.getString('key');
+      try {
+        container.addSshKey(name, key);
+        return interaction.reply({
+          content: `🔑 **SSH Public Key Added Successfully!** You can now connect via:\n\`ssh root@${container.getHostPublicIP()} -p ${vpsRecord.sshPort}\``,
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch (err) {
+        return interaction.reply({ content: `❌ Failed to add SSH key: ${err.message}`, flags: MessageFlags.Ephemeral });
+      }
+    }
+
+    // =========================================================================
+    // 8. TERMINAL
+    // =========================================================================
     if (sub === 'terminal') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
@@ -486,7 +661,9 @@ module.exports = {
       }
     }
 
-    // 5. START
+    // =========================================================================
+    // 9. START, STOP, RESTART, DELETE
+    // =========================================================================
     if (sub === 'start') {
       try {
         container.start(name);
@@ -496,7 +673,6 @@ module.exports = {
       }
     }
 
-    // 6. STOP
     if (sub === 'stop') {
       try {
         container.stop(name);
@@ -506,7 +682,6 @@ module.exports = {
       }
     }
 
-    // 7. RESTART
     if (sub === 'restart') {
       try {
         container.restart(name);
@@ -516,7 +691,19 @@ module.exports = {
       }
     }
 
-    // 8. RENEW
+    if (sub === 'delete') {
+      try {
+        container.delete(name);
+        db.removeVPS(name);
+        return interaction.reply({ content: `🗑️ Permanently deleted VPS \`${name}\`.`, flags: MessageFlags.Ephemeral });
+      } catch (err) {
+        return interaction.reply({ content: `❌ Failed to delete: ${err.message}`, flags: MessageFlags.Ephemeral });
+      }
+    }
+
+    // =========================================================================
+    // 10. RENEW (Using Coins or Free Extension)
+    // =========================================================================
     if (sub === 'renew') {
       const plan = config.plans[vpsRecord.plan] || config.plans.free;
       const durationMs = (plan.durationDays || 7) * 24 * 60 * 60 * 1000;
@@ -530,21 +717,50 @@ module.exports = {
       });
     }
 
-    // 9. EXPOSE PORT
+    // =========================================================================
+    // 11. REBUILD (Factory Reset)
+    // =========================================================================
+    if (sub === 'rebuild') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const targetOS = interaction.options.getString('os') || vpsRecord.image || config.defaultImage;
+
+      try {
+        const result = await container.rebuildContainer(name, targetOS, vpsRecord.template || 'none');
+        db.setVPS(name, {
+          ...vpsRecord,
+          image: targetOS,
+          sshPort: result.sshPort,
+          webPort: result.webPort,
+          webTerminalUrl: result.webTerminalUrl,
+        });
+
+        return interaction.editReply({
+          content: `🔄 **VPS \`${name}\` has been rebuilt with a clean \`${targetOS}\` image!**\nNew Root Password: \`${result.password}\`\nSSH Port: \`${result.sshPort}\``,
+        });
+      } catch (err) {
+        return interaction.editReply(`❌ Rebuild failed: ${err.message}`);
+      }
+    }
+
+    // =========================================================================
+    // 12. EXPOSE PORT (TCP / UDP)
+    // =========================================================================
     if (sub === 'expose') {
       const targetPort = interaction.options.getInteger('port');
+      const proto = interaction.options.getString('protocol') || 'tcp';
+
       if (targetPort < 1 || targetPort > 65535) {
         return interaction.reply({ content: '❌ Invalid port number (must be 1-65535).', flags: MessageFlags.Ephemeral });
       }
 
       try {
-        const exposedResult = container.exposePort(name, targetPort);
+        const exposedResult = container.exposePort(name, targetPort, proto);
         const currentExposed = vpsRecord.exposedPorts || [];
         currentExposed.push(exposedResult);
         db.setVPS(name, { ...vpsRecord, exposedPorts: currentExposed });
 
         return interaction.reply({
-          content: `🌐 **Port Forwarded Successfully!**\n\nContainer Port: \`${targetPort}\`\nPublic Host Port: \`${exposedResult.hostPort}\`\nPublic URL: \`${exposedResult.publicUrl}\``,
+          content: `🌐 **Port Forwarded Successfully!**\n\nContainer Port: \`${targetPort}\` (${proto.toUpperCase()})\nPublic Host Port: \`${exposedResult.hostPort}\`\nPublic Address: \`${exposedResult.publicUrl}\``,
           flags: MessageFlags.Ephemeral,
         });
       } catch (err) {
@@ -552,7 +768,9 @@ module.exports = {
       }
     }
 
-    // 10. BACKUP / SNAPSHOT
+    // =========================================================================
+    // 13. BACKUP & RESTORE
+    // =========================================================================
     if (sub === 'backup') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
@@ -567,7 +785,6 @@ module.exports = {
       }
     }
 
-    // 11. RESTORE
     if (sub === 'restore') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const tag = interaction.options.getString('tag');
@@ -579,15 +796,35 @@ module.exports = {
       }
     }
 
-    // 12. DELETE
-    if (sub === 'delete') {
-      try {
-        container.delete(name);
-        db.removeVPS(name);
-        return interaction.reply({ content: `🗑️ Permanently deleted VPS \`${name}\`.`, flags: MessageFlags.Ephemeral });
-      } catch (err) {
-        return interaction.reply({ content: `❌ Failed to delete: ${err.message}`, flags: MessageFlags.Ephemeral });
+    // =========================================================================
+    // 14. UPGRADE PLAN
+    // =========================================================================
+    if (sub === 'upgrade') {
+      const targetPlanKey = interaction.options.getString('plan');
+      const targetPlan = config.plans[targetPlanKey];
+      if (!targetPlan) {
+        return interaction.reply({ content: '❌ Invalid plan selected.', flags: MessageFlags.Ephemeral });
       }
+
+      const cost = targetPlanKey === 'bronze' ? config.costs.upgradeBronze : config.costs.upgradeSilver;
+      const user = db.getUser(userId);
+
+      if (!isAdmin && (user.coins || 0) < cost) {
+        return interaction.reply({
+          content: `❌ Insufficient coins! You need **${cost} coins** (You have: **${user.coins || 0} coins**). Use \`/vps daily\` to earn more!`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (!isAdmin) {
+        db.addCoins(userId, -cost);
+      }
+
+      db.setVPS(name, { ...vpsRecord, plan: targetPlanKey });
+      return interaction.reply({
+        content: `🎉 **Upgraded \`${name}\` to ${targetPlan.name}!** (${targetPlan.cpu} vCPU, ${targetPlan.ram} RAM).`,
+        flags: MessageFlags.Ephemeral,
+      });
     }
   },
 };

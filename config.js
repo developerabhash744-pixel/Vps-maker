@@ -15,6 +15,27 @@ module.exports = {
   // Security & Quotas
   maxVpsPerUser: parseInt(process.env.MAX_VPS_PER_USER, 10) || 1,
   pidsLimit: parseInt(process.env.PIDS_LIMIT, 10) || 250,
+  gracePeriodHours: 48, // Auto-purge containers stopped & expired > 48 hours
+
+  // Economy & Coins
+  dailyRewardCoins: 50,
+  costs: {
+    renew7Days: 100,
+    upgradeBronze: 250,
+    upgradeSilver: 500,
+  },
+
+  // Dangerous commands blacklist for in-discord /vps exec
+  commandBlacklist: [
+    ':(){ :|:& };:',
+    'mkfs',
+    'dd if=/dev/zero',
+    'dd if=/dev/random',
+    'chmod -R 777 /',
+    '> /dev/sda',
+    '> /dev/vda',
+    'rm -rf --no-preserve-root /',
+  ],
 
   // Resource Plans
   plans: {
@@ -43,7 +64,7 @@ module.exports = {
       adminOnly: false,
     },
     gold: {
-      name: 'Gold Plan (Admin)',
+      name: 'Gold Plan (Admin / VIP)',
       cpu: '8',
       ram: '8GiB',
       disk: '80GiB',

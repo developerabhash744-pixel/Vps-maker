@@ -1,6 +1,7 @@
 const { execSync, exec, spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const config = require('./config');
 const db = require('./database');
 
@@ -128,6 +129,13 @@ class ContainerManager {
     return `http://${hostIp}:${webPort}`;
   }
 
+  // Create ASCII Progress Bar
+  makeProgressBar(percent, length = 10) {
+    const filled = Math.min(length, Math.max(0, Math.round((percent / 100) * length)));
+    const empty = length - filled;
+    return '█'.repeat(filled) + '░'.repeat(empty);
+  }
+
   // 1. Cloudflare Worker Web Terminal Bridge (Real Interactive PTY + Heartbeat)
   createWorkerBridge(name) {
     if (!config.proxyUrl) return null;
@@ -139,7 +147,6 @@ class ContainerManager {
       const WebSocket = require('ws');
       const ws = new WebSocket(wsUrl);
 
-      // Clean up previous bridge instance if present
       if (this.workerBridges[name]) {
         try { this.workerBridges[name].ws.close(); } catch {}
         try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
@@ -150,14 +157,12 @@ class ContainerManager {
       ws.on('open', () => {
         console.log(`[Worker Bridge Active for ${name}]: ${webUrl}`);
 
-        // Keepalive heartbeat ping every 15 seconds
         const pingInterval = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             try { ws.ping(); } catch {}
           }
         }, 15000);
 
-        // Spawn interactive subshell inside container using script for full PTY
         const targetCmd = this.engine === 'docker'
           ? `${this.dockerBin} exec -it ${name} bash`
           : `${this.lxcBin} exec ${name} -- bash`;
@@ -211,29 +216,7 @@ class ContainerManager {
     }
   }
 
-  // 2. Ngrok Tunnel Fallback
-  async createNgrokTunnel(name, webPort) {
-    const token = config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN;
-    if (!token) return null;
-    try {
-      const ngrok = require('@ngrok/ngrok');
-      const listener = await ngrok.forward({
-        addr: webPort,
-        authtoken: token,
-      });
-      if (listener && listener.url()) {
-        const url = listener.url();
-        console.log(`[Ngrok Active for ${name}]: ${url}`);
-        this.ngrokListeners[name] = listener;
-        return url;
-      }
-    } catch (err) {
-      console.warn(`[Ngrok warning for ${name}]:`, err.message);
-    }
-    return null;
-  }
-
-  // 3. Public Tunnel Manager
+  // 2. Public Tunnel Manager
   async createPublicTunnel(name, webPort) {
     if (config.proxyUrl) {
       try {
@@ -242,26 +225,21 @@ class ContainerManager {
       } catch {}
     }
 
-    try {
-      const ngrokUrl = await this.createNgrokTunnel(name, webPort);
-      if (ngrokUrl) return ngrokUrl;
-    } catch {}
-
-    try {
-      const localtunnel = require('localtunnel');
-      const tunnel = await localtunnel({ port: webPort });
-      if (tunnel && tunnel.url) {
-        this.tunnels[name] = tunnel;
-        return tunnel.url;
-      }
-    } catch (err) {
-      console.warn(`[LocalTunnel warning for ${name}]:`, err.message);
+    if (config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN) {
+      try {
+        const ngrok = require('@ngrok/ngrok');
+        const listener = await ngrok.forward({ addr: webPort, authtoken: config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN });
+        if (listener && listener.url()) {
+          this.ngrokListeners[name] = listener;
+          return listener.url();
+        }
+      } catch {}
     }
 
     return this.getWebTerminalUrl(webPort);
   }
 
-  // Create Container with Security Quotas & Optional Template Setup
+  // Create Container with Strict Security Quotas & Templates
   async createContainer({ name, image, cpu, ram, templateKey = 'none' }) {
     const rootPassword = this.generatePassword();
     const targetImage = this.formatImage(image);
@@ -277,7 +255,6 @@ class ContainerManager {
         const memLimit = this.formatDockerMemory(ram);
         const cpuLimit = cpu || '1';
 
-        // Launch container with strict security hardening & resource limits
         this.run(
           `${this.dockerBin} run -d --name ${name} --hostname ${name} ` +
           `--dns 8.8.8.8 --dns 1.1.1.1 -p ${sshPort}:22 ` +
@@ -286,54 +263,41 @@ class ContainerManager {
           `${targetImage} sleep infinity`
         );
 
-        // Set root password
         this.run(`${this.dockerBin} exec ${name} bash -c "echo 'root:${rootPassword}' | chpasswd"`);
 
-        // Template installation script (if selected)
         const selectedTemplate = config.templates[templateKey];
         const templateScript = selectedTemplate && selectedTemplate.script ? selectedTemplate.script : '';
 
-        // Base SSH & environment setup script
+        // Anti-spam outbound port 25 block + base SSH setup
         const initScript = `
           apt-get update -y >/dev/null 2>&1
-          apt-get install -y openssh-server curl sudo procps net-tools ca-certificates >/dev/null 2>&1 || true
-          mkdir -p /var/run/sshd
+          apt-get install -y openssh-server curl sudo procps net-tools ca-certificates iptables >/dev/null 2>&1 || true
+          mkdir -p /var/run/sshd /root/.ssh
+          chmod 700 /root/.ssh
+          touch /root/.ssh/authorized_keys
+          chmod 600 /root/.ssh/authorized_keys
           sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config 2>/dev/null || true
           sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || true
+          iptables -A OUTPUT -p tcp --dport 25 -j REJECT 2>/dev/null || true
           service ssh restart >/dev/null 2>&1 || /etc/init.d/ssh restart >/dev/null 2>&1 || true
           ${templateScript}
         `;
 
-        // Run setup in background
         exec(`${this.dockerBin} exec ${name} bash -c "${initScript.replace(/\n/g, ' ')}"`);
 
-        // Start Host-level ttyd attached directly to this container
         exec(
           `nohup ttyd -p ${webPort} -i 127.0.0.1 -c root:${rootPassword} -W ${this.dockerBin} exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
         );
 
-        // Open Public Web Tunnel
         let webTerminalUrl = await this.createPublicTunnel(name, webPort);
-        if (!webTerminalUrl) {
-          webTerminalUrl = this.getWebTerminalUrl(webPort);
-        }
+        if (!webTerminalUrl) webTerminalUrl = this.getWebTerminalUrl(webPort);
 
-        return {
-          success: true,
-          password: rootPassword,
-          sshPort,
-          webPort,
-          webTerminalUrl,
-          hostIp,
-        };
+        return { success: true, password: rootPassword, sshPort, webPort, webTerminalUrl, hostIp };
       } catch (err) {
-        try {
-          this.run(`${this.dockerBin} rm -f ${name}`);
-        } catch {}
+        try { this.run(`${this.dockerBin} rm -f ${name}`); } catch {}
         throw new Error(`Failed to create Docker VPS: ${err.message}`);
       }
     } else {
-      // LXD Engine fallback
       try {
         this.run(`${this.lxcBin} launch ${targetImage} ${name}`);
         if (cpu) this.run(`${this.lxcBin} config set ${name} limits.cpu ${cpu}`);
@@ -349,9 +313,7 @@ class ContainerManager {
         const webTerminalUrl = this.createWorkerBridge(name) || this.getWebTerminalUrl(22);
         return { success: true, password: rootPassword, sshPort: 22, webPort: null, webTerminalUrl, hostIp };
       } catch (err) {
-        try {
-          this.run(`${this.lxcBin} delete -f ${name}`);
-        } catch {}
+        try { this.run(`${this.lxcBin} delete -f ${name}`); } catch {}
         throw new Error(`Failed to create LXD VPS: ${err.message}`);
       }
     }
@@ -360,15 +322,10 @@ class ContainerManager {
   start(name) {
     if (this.engine === 'docker') {
       this.run(`${this.dockerBin} start ${name}`);
-      // Re-establish worker bridge on start
-      if (config.proxyUrl) {
-        setTimeout(() => this.createWorkerBridge(name), 1000);
-      }
+      if (config.proxyUrl) setTimeout(() => this.createWorkerBridge(name), 1000);
     } else {
       this.run(`${this.lxcBin} start ${name}`);
-      if (config.proxyUrl) {
-        setTimeout(() => this.createWorkerBridge(name), 1000);
-      }
+      if (config.proxyUrl) setTimeout(() => this.createWorkerBridge(name), 1000);
     }
   }
 
@@ -381,10 +338,6 @@ class ContainerManager {
         try { this.workerBridges[name].ws.close(); } catch {}
         try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
         delete this.workerBridges[name];
-      }
-      if (this.ngrokListeners[name]) {
-        try { this.ngrokListeners[name].close(); } catch {}
-        delete this.ngrokListeners[name];
       }
     } else {
       this.run(`${this.lxcBin} stop ${name} --force`);
@@ -406,15 +359,12 @@ class ContainerManager {
     if (this.engine === 'docker') {
       this.run(`${this.dockerBin} rm -f ${name}`);
       exec(`pkill -f "ttyd.*${name}" 2>/dev/null || true`);
+      exec(`pkill -f "socat.*${name}" 2>/dev/null || true`);
       if (this.workerBridges[name]) {
         if (this.workerBridges[name].pingInterval) clearInterval(this.workerBridges[name].pingInterval);
         try { this.workerBridges[name].ws.close(); } catch {}
         try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
         delete this.workerBridges[name];
-      }
-      if (this.ngrokListeners[name]) {
-        try { this.ngrokListeners[name].close(); } catch {}
-        delete this.ngrokListeners[name];
       }
     } else {
       this.run(`${this.lxcBin} delete -f ${name}`);
@@ -473,7 +423,116 @@ class ContainerManager {
     }
   }
 
-  // Backup / Snapshot
+  // Live Stats Monitoring with Progress Bars
+  getLiveStats(name) {
+    try {
+      if (this.engine === 'docker') {
+        const statsOut = this.run(`${this.dockerBin} stats ${name} --no-stream --format "{{json .}}"`);
+        const data = JSON.parse(statsOut.trim());
+
+        const cpuPercentStr = data.CPUPerc || '0%';
+        const cpuPercent = parseFloat(cpuPercentStr.replace('%', '')) || 0;
+        const memUsageStr = data.MemUsage || '0B / 0B';
+        const memPercentStr = data.MemPerc || '0%';
+        const memPercent = parseFloat(memPercentStr.replace('%', '')) || 0;
+        const netIO = data.NetIO || '0B / 0B';
+        const blockIO = data.BlockIO || '0B / 0B';
+        const pids = data.PIDs || '0';
+
+        return {
+          cpuPercent,
+          cpuPercentStr,
+          cpuBar: this.makeProgressBar(cpuPercent),
+          memUsageStr,
+          memPercent,
+          memPercentStr,
+          memBar: this.makeProgressBar(memPercent),
+          netIO,
+          blockIO,
+          pids,
+          status: 'Running',
+        };
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }
+
+  // In-Discord Command Execution (with security blacklist check)
+  async execCommand(name, command) {
+    // Check command against security blacklist
+    for (const pattern of config.commandBlacklist) {
+      if (command.includes(pattern)) {
+        throw new Error(`Command blocked by security filter (contains restricted pattern: \`${pattern}\`)`);
+      }
+    }
+
+    return new Promise((resolve) => {
+      const cmd = `${this.dockerBin} exec ${name} bash -c ${JSON.stringify(command)}`;
+      const startTime = Date.now();
+      exec(cmd, { timeout: 15000 }, (error, stdout, stderr) => {
+        const duration = Date.now() - startTime;
+        resolve({
+          stdout: stdout ? stdout.trim() : '',
+          stderr: stderr ? stderr.trim() : (error ? error.message : ''),
+          exitCode: error ? (error.code || 1) : 0,
+          duration,
+        });
+      });
+    });
+  }
+
+  // Fetch Container Logs
+  getLogs(name, lines = 50) {
+    try {
+      if (this.engine === 'docker') {
+        const logs = this.run(`${this.dockerBin} logs --tail ${lines} ${name} 2>&1`);
+        return logs.trim() || 'No recent container logs recorded.';
+      }
+    } catch (err) {
+      return `Error retrieving logs: ${err.message}`;
+    }
+    return 'Logs not available for this container.';
+  }
+
+  // Add SSH Public Key to Container
+  addSshKey(name, publicKey) {
+    const cleanKey = publicKey.trim().replace(/[\r\n]+/g, '');
+    if (!cleanKey.startsWith('ssh-') && !cleanKey.startsWith('ecdsa-')) {
+      throw new Error('Invalid SSH public key format (must start with ssh-rsa, ssh-ed25519, etc.).');
+    }
+    this.run(
+      `${this.dockerBin} exec ${name} bash -c "mkdir -p /root/.ssh && echo '${cleanKey}' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"`
+    );
+    return true;
+  }
+
+  // Reset Root Password
+  resetPassword(name, newPassword = null) {
+    const password = newPassword || this.generatePassword();
+    this.run(`${this.dockerBin} exec ${name} bash -c "echo 'root:${password}' | chpasswd"`);
+    return password;
+  }
+
+  // Factory Reset / Rebuild Container OS
+  rebuildContainer(name, image = config.defaultImage, templateKey = 'none') {
+    const vps = db.getVPS(name);
+    if (!vps) throw new Error('VPS not found.');
+
+    const plan = config.plans[vps.plan] || config.plans.free;
+    this.delete(name);
+
+    return this.createContainer({
+      name,
+      image,
+      cpu: plan.cpu,
+      ram: plan.ram,
+      templateKey,
+    });
+  }
+
+  // Create Snapshot Backup
   createBackup(name) {
     const timestamp = Date.now();
     const tag = `backup-${name}-${timestamp}`;
@@ -503,10 +562,11 @@ class ContainerManager {
     }
   }
 
-  // Expose / Forward Port
-  exposePort(name, containerPort) {
+  // Expose TCP or UDP Port
+  exposePort(name, containerPort, protocol = 'tcp') {
     const hostPort = this.getRandomPort(30000, 45000);
     const hostIp = this.getHostPublicIP();
+    const proto = protocol.toLowerCase() === 'udp' ? 'UDP' : 'TCP';
 
     if (this.engine === 'docker') {
       const inspectOut = this.run(`${this.dockerBin} inspect ${name}`);
@@ -514,23 +574,53 @@ class ContainerManager {
       const ip = data.NetworkSettings?.IPAddress;
       if (!ip) throw new Error('Container IP not available. Ensure container is running.');
 
-      exec(
-        `nohup socat TCP-LISTEN:${hostPort},fork,reuseaddr TCP:${ip}:${containerPort} > /tmp/socat_${name}_${hostPort}.log 2>&1 &`
-      );
+      const socatCmd = proto === 'UDP'
+        ? `nohup socat UDP-LISTEN:${hostPort},fork UDP:${ip}:${containerPort} > /tmp/socat_${name}_${hostPort}.log 2>&1 &`
+        : `nohup socat TCP-LISTEN:${hostPort},fork,reuseaddr TCP:${ip}:${containerPort} > /tmp/socat_${name}_${hostPort}.log 2>&1 &`;
 
-      return { hostPort, containerPort, hostIp, publicUrl: `http://${hostIp}:${hostPort}` };
-    } else {
-      const deviceName = `port-${containerPort}`;
-      try {
-        this.run(`${this.lxcBin} config device add ${name} ${deviceName} proxy listen=tcp:0.0.0.0:${hostPort} connect=tcp:127.0.0.1:${containerPort}`);
-      } catch (e) {
-        const info = this.getInfo(name);
-        if (info && info.ipv4 && info.ipv4 !== 'N/A') {
-          exec(`nohup socat TCP-LISTEN:${hostPort},fork,reuseaddr TCP:${info.ipv4}:${containerPort} > /dev/null 2>&1 &`);
-        }
-      }
-      return { hostPort, containerPort, hostIp, publicUrl: `http://${hostIp}:${hostPort}` };
+      exec(socatCmd);
+
+      return {
+        hostPort,
+        containerPort,
+        protocol: proto,
+        hostIp,
+        publicUrl: proto === 'TCP' ? `http://${hostIp}:${hostPort}` : `${hostIp}:${hostPort} (${proto})`,
+      };
     }
+  }
+
+  // Host Server System Health Metrics
+  getHostStats() {
+    const totalMem = Math.round(os.totalmem() / 1024 / 1024 / 1024);
+    const freeMem = Math.round(os.freemem() / 1024 / 1024 / 1024);
+    const usedMem = totalMem - freeMem;
+    const memPercent = Math.round((usedMem / totalMem) * 100);
+    const cpuCount = os.cpus().length;
+    const loadAvg = os.loadavg().map((l) => l.toFixed(2)).join(', ');
+    const uptimeHours = Math.round(os.uptime() / 3600);
+
+    let diskInfo = 'N/A';
+    try {
+      const df = this.run('df -h / | tail -1').split(/\s+/);
+      diskInfo = `${df[2]} / ${df[1]} (${df[4]} used)`;
+    } catch {}
+
+    const allVPS = db.getAllVPS();
+    const runningCount = allVPS.filter((v) => this.getInfo(v.containerName)?.status === 'Running').length;
+
+    return {
+      totalMem: `${totalMem} GB`,
+      usedMem: `${usedMem} GB (${memPercent}%)`,
+      memBar: this.makeProgressBar(memPercent),
+      cpuCount: `${cpuCount} Cores`,
+      loadAvg,
+      uptime: `${uptimeHours} hours`,
+      diskInfo,
+      totalVPS: allVPS.length,
+      runningVPS: runningCount,
+      publicIp: this.getHostPublicIP(),
+    };
   }
 
   async createWebTerminal(name) {
@@ -545,12 +635,6 @@ class ContainerManager {
       }
     }
 
-    if (this.ngrokListeners && this.ngrokListeners[name] && this.ngrokListeners[name].url()) {
-      return this.ngrokListeners[name].url();
-    }
-    if (this.tunnels && this.tunnels[name] && this.tunnels[name].url) {
-      return this.tunnels[name].url;
-    }
     if (vps.webPort) {
       const url = await this.createPublicTunnel(name, vps.webPort);
       if (url) {
@@ -559,9 +643,7 @@ class ContainerManager {
       }
       return this.getWebTerminalUrl(vps.webPort);
     }
-    if (vps.webTerminalUrl) {
-      return vps.webTerminalUrl;
-    }
+    if (vps.webTerminalUrl) return vps.webTerminalUrl;
     throw new Error('Web terminal is not configured for this container.');
   }
 }
