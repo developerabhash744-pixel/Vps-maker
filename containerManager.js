@@ -167,14 +167,27 @@ class ContainerManager {
           ? `${this.dockerBin} exec -it ${name} bash`
           : `${this.lxcBin} exec ${name} -- bash`;
 
-        const proc = spawn('/usr/bin/script', ['-qefc', targetCmd, '/dev/null'], {
-          env: {
-            ...process.env,
-            PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin',
-            TERM: 'xterm-256color',
-            LANG: 'C.UTF-8',
-          },
-          stdio: ['pipe', 'pipe', 'pipe'],
+        const scriptBin = fs.existsSync('/usr/bin/script') ? '/usr/bin/script' : 'script';
+        let proc;
+        try {
+          proc = spawn(scriptBin, ['-qefc', targetCmd, '/dev/null'], {
+            env: {
+              ...process.env,
+              PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin',
+              TERM: 'xterm-256color',
+              LANG: 'C.UTF-8',
+            },
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+        } catch (spawnErr) {
+          console.warn('[PTY Spawn Fallback]:', spawnErr.message);
+          proc = this.engine === 'docker'
+            ? spawn(this.dockerBin, ['exec', '-i', name, 'bash'], { stdio: ['pipe', 'pipe', 'pipe'] })
+            : spawn(this.lxcBin, ['exec', name, '--', 'bash'], { stdio: ['pipe', 'pipe', 'pipe'] });
+        }
+
+        proc.on('error', (err) => {
+          console.warn(`[PTY Error for ${name}]:`, err.message);
         });
 
         proc.stdout.on('data', (d) => {
@@ -196,7 +209,8 @@ class ContainerManager {
           delete this.workerBridges[name];
         });
 
-        proc.on('close', () => {
+        proc.on('close', (code) => {
+          console.log(`[PTY Closed for ${name}] exit code: ${code}`);
           clearInterval(pingInterval);
           try { ws.close(); } catch {}
           delete this.workerBridges[name];
