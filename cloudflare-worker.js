@@ -28,7 +28,8 @@ function handleTerminalSession(request, session) {
     }
 
     const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
+    const client = pair[0];
+    const server = pair[1];
     server.accept();
 
     session.agentWs = server;
@@ -78,7 +79,8 @@ function handleTerminalSession(request, session) {
 
     // Handle Browser WebSocket Connection
     const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
+    const client = pair[0];
+    const server = pair[1];
     server.accept();
 
     session.browserSockets.add(server);
