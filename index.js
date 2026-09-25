@@ -193,6 +193,64 @@ async function bootstrap() {
     setInterval(checkExpirationsAndReminders, 15 * 60 * 1000);
   });
 
+  // Automatic Background Invite Tracker: Upgrades VPS on member join
+  client.on(Events.GuildMemberAdd, async (member) => {
+    try {
+      const guild = member.guild;
+      if (!guild) return;
+
+      const invites = await guild.invites.fetch();
+      for (const [code, inv] of invites) {
+        if (!inv.inviter) continue;
+        const inviterId = inv.inviter.id;
+        const userVPSList = db.getUserVPSList(inviterId);
+        if (userVPSList.length === 0) continue;
+
+        const totalInvites = await vpsCommand.fetchUserInvites(guild, inviterId);
+        const boostInfo = vpsCommand.calculateBoostTier(totalInvites);
+
+        // Apply boost to their active container automatically
+        for (const v of userVPSList) {
+          if (v.ram !== boostInfo.ram || v.cpu !== boostInfo.cpu) {
+            try {
+              container.updateContainerResources(v.containerName, boostInfo.ram, boostInfo.cpu);
+              db.setVPS(v.containerName, {
+                ...v,
+                ram: boostInfo.ram,
+                cpu: boostInfo.cpu,
+                disk: boostInfo.disk,
+                boostTier: boostInfo.tierName,
+              });
+
+              // Send congratulations DM to the inviter
+              const inviterUser = await client.users.fetch(inviterId);
+              if (inviterUser) {
+                const boostEmbed = new EmbedBuilder()
+                  .setColor('#00FF88')
+                  .setTitle(`🎉 Server Invite Milestone Reached!`)
+                  .setDescription(
+                    `A new member just joined using your invite link! (Total: **${totalInvites} Invites**)\n\n` +
+                    `⚡ Your VPS **\`${v.containerName}\`** has been **automatically upgraded** to:\n` +
+                    `• **RAM:** **${boostInfo.ram}**\n` +
+                    `• **CPU:** **${boostInfo.cpu} vCPU**\n` +
+                    `• **Disk:** **${boostInfo.disk}**\n` +
+                    `• **Tier:** **${boostInfo.tierName}**`
+                  )
+                  .setFooter({ text: `${config.hostingName} • Automatic Resource Booster` });
+
+                await inviterUser.send({ embeds: [boostEmbed] });
+              }
+            } catch (err) {
+              console.warn('[Auto-Boost Error]:', err.message);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Invite Tracker Warning]:', e.message);
+    }
+  });
+
   // Interaction handler (Commands & Interactive Buttons)
   client.on('interactionCreate', async (interaction) => {
     // 1. Slash Commands
