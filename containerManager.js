@@ -11,11 +11,29 @@ class ContainerManager {
     this.tunnels = {};
     this.ngrokListeners = {};
     this.workerBridges = {};
+    this.dockerBin = this.resolveBinary('docker', ['/usr/bin/docker', '/usr/local/bin/docker', '/snap/bin/docker']);
+    this.lxcBin = this.resolveBinary('lxc', ['/snap/bin/lxc', '/usr/bin/lxc', '/usr/local/bin/lxc']);
     this.ensureHostTtyd();
   }
 
+  resolveBinary(name, candidates) {
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
+    try {
+      return this.run(`command -v ${name}`).trim();
+    } catch {
+      return name;
+    }
+  }
+
   run(command, options = {}) {
-    return execSync(command, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], ...options });
+    return execSync(command, {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin' },
+      ...options,
+    });
   }
 
   ensureHostTtyd() {
@@ -39,8 +57,7 @@ class ContainerManager {
       return 'docker';
     } catch {
       try {
-        const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
-        this.run(`${lxcBin} version`);
+        this.run('lxc version');
         return 'lxd';
       } catch {
         return 'docker';
@@ -51,11 +68,10 @@ class ContainerManager {
   isAvailable() {
     try {
       if (this.engine === 'docker') {
-        this.run('docker info');
+        this.run(`${this.dockerBin} info`);
         return true;
       } else {
-        const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
-        this.run(`${lxcBin} version`);
+        this.run(`${this.lxcBin} version`);
         return true;
       }
     } catch {
@@ -112,62 +128,55 @@ class ContainerManager {
     return `http://${hostIp}:${webPort}`;
   }
 
+  // 1. Cloudflare Worker Web Terminal Bridge (Real Interactive PTY + Heartbeat)
   createWorkerBridge(name) {
     if (!config.proxyUrl) return null;
-    const vps = db.getVPS(name);
-    const token = (vps && vps.webToken) || crypto.randomBytes(12).toString('hex');
-    if (vps && !vps.webToken) {
-      db.setVPS(name, { ...vps, webToken: token });
-    }
-
+    const token = crypto.randomBytes(12).toString('hex');
     const wsUrl = config.proxyUrl.replace(/^http/, 'ws').replace(/\/+$/, '') + `/tunnel/${name}?token=${token}`;
     const webUrl = config.proxyUrl.replace(/\/+$/, '') + `/term/${name}?token=${token}`;
-
-    if (this.workerBridges[name] && this.workerBridges[name].ws?.readyState === 1) {
-      return webUrl;
-    }
 
     try {
       const WebSocket = require('ws');
       const ws = new WebSocket(wsUrl);
 
-      let pingTimer = null;
+      // Clean up previous bridge instance if present
+      if (this.workerBridges[name]) {
+        try { this.workerBridges[name].ws.close(); } catch {}
+        try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
+        if (this.workerBridges[name].pingInterval) clearInterval(this.workerBridges[name].pingInterval);
+        delete this.workerBridges[name];
+      }
 
       ws.on('open', () => {
-        pingTimer = setInterval(() => {
+        console.log(`[Worker Bridge Active for ${name}]: ${webUrl}`);
+
+        // Keepalive heartbeat ping every 15 seconds
+        const pingInterval = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             try { ws.ping(); } catch {}
           }
         }, 15000);
 
-        const dockerBin = fs.existsSync('/usr/bin/docker')
-          ? '/usr/bin/docker'
-          : (fs.existsSync('/usr/local/bin/docker') ? '/usr/local/bin/docker' : 'docker');
-        const lxcBin = fs.existsSync('/snap/bin/lxc')
-          ? '/snap/bin/lxc'
-          : (fs.existsSync('/usr/bin/lxc') ? '/usr/bin/lxc' : 'lxc');
+        // Spawn interactive subshell inside container using script for full PTY
+        const targetCmd = this.engine === 'docker'
+          ? `${this.dockerBin} exec -it ${name} bash`
+          : `${this.lxcBin} exec ${name} -- bash`;
 
-        const innerCmd = this.engine === 'docker'
-          ? `${dockerBin} exec -it ${name} bash`
-          : `${lxcBin} exec ${name} -- bash`;
-
-        const fullPath = (process.env.PATH || '') + ':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-
-        const proc = spawn('script', ['-qefc', innerCmd, '/dev/null'], {
+        const proc = spawn('/usr/bin/script', ['-qefc', targetCmd, '/dev/null'], {
           env: {
             ...process.env,
-            PATH: fullPath,
+            PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin',
             TERM: 'xterm-256color',
-            COLUMNS: '120',
-            LINES: '30',
+            LANG: 'C.UTF-8',
           },
+          stdio: ['pipe', 'pipe', 'pipe'],
         });
 
         proc.stdout.on('data', (d) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(d.toString('utf8'));
+          if (ws.readyState === WebSocket.OPEN) ws.send(d);
         });
         proc.stderr.on('data', (d) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(d.toString('utf8'));
+          if (ws.readyState === WebSocket.OPEN) ws.send(d);
         });
 
         ws.on('message', (msg) => {
@@ -176,24 +185,22 @@ class ContainerManager {
           } catch {}
         });
 
-        ws.on('close', (code, reason) => {
-          if (pingTimer) clearInterval(pingTimer);
+        ws.on('close', () => {
+          clearInterval(pingInterval);
           try { proc.kill('SIGKILL'); } catch {}
           delete this.workerBridges[name];
         });
 
-        proc.on('close', (code) => {
-          if (pingTimer) clearInterval(pingTimer);
+        proc.on('close', () => {
+          clearInterval(pingInterval);
           try { ws.close(); } catch {}
           delete this.workerBridges[name];
         });
 
-        this.workerBridges[name] = { ws, proc, url: webUrl, token };
-        console.log(`[Worker Bridge Connected for ${name}]: ${webUrl}`);
+        this.workerBridges[name] = { ws, proc, url: webUrl, token, pingInterval };
       });
 
       ws.on('error', (err) => {
-        if (pingTimer) clearInterval(pingTimer);
         console.warn(`[Worker Bridge error for ${name}]:`, err.message);
       });
 
@@ -204,12 +211,11 @@ class ContainerManager {
     }
   }
 
-  // 2. Ngrok Ingress (Native official SDK)
+  // 2. Ngrok Tunnel Fallback
   async createNgrokTunnel(name, webPort) {
     const token = config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN;
     if (!token) return null;
     try {
-      console.log(`[Ngrok] Opening tunnel for ${name} on port ${webPort}...`);
       const ngrok = require('@ngrok/ngrok');
       const listener = await ngrok.forward({
         addr: webPort,
@@ -229,25 +235,22 @@ class ContainerManager {
 
   // 3. Public Tunnel Manager
   async createPublicTunnel(name, webPort) {
-    // Priority 1: Cloudflare Worker Bridge (Firewall-Proof)
-    try {
-      const workerUrl = this.createWorkerBridge(name);
-      if (workerUrl) return workerUrl;
-    } catch {}
+    if (config.proxyUrl) {
+      try {
+        const workerUrl = this.createWorkerBridge(name);
+        if (workerUrl) return workerUrl;
+      } catch {}
+    }
 
-    // Priority 2: Ngrok
     try {
       const ngrokUrl = await this.createNgrokTunnel(name, webPort);
       if (ngrokUrl) return ngrokUrl;
     } catch {}
 
-    // Priority 3: LocalTunnel npm
     try {
-      console.log(`[Public Tunnel] Opening LocalTunnel for ${name} on port ${webPort}...`);
       const localtunnel = require('localtunnel');
       const tunnel = await localtunnel({ port: webPort });
       if (tunnel && tunnel.url) {
-        console.log(`[LocalTunnel Active for ${name}]: ${tunnel.url}`);
         this.tunnels[name] = tunnel;
         return tunnel.url;
       }
@@ -255,16 +258,17 @@ class ContainerManager {
       console.warn(`[LocalTunnel warning for ${name}]:`, err.message);
     }
 
-    // Fallback: Host Direct IP
     return this.getWebTerminalUrl(webPort);
   }
 
-  async createContainer({ name, image, cpu, ram }) {
+  // Create Container with Security Quotas & Optional Template Setup
+  async createContainer({ name, image, cpu, ram, templateKey = 'none' }) {
     const rootPassword = this.generatePassword();
     const targetImage = this.formatImage(image);
     const sshPort = this.getRandomPort(20000, 34000);
     const webPort = this.getRandomPort(34001, 49000);
     const hostIp = this.getHostPublicIP();
+    const pidsLimit = config.pidsLimit || 250;
 
     this.ensureHostTtyd();
 
@@ -273,15 +277,23 @@ class ContainerManager {
         const memLimit = this.formatDockerMemory(ram);
         const cpuLimit = cpu || '1';
 
-        // 1. Launch container with exposed SSH port
+        // Launch container with strict security hardening & resource limits
         this.run(
-          `docker run -d --name ${name} --hostname ${name} --dns 8.8.8.8 --dns 1.1.1.1 -p ${sshPort}:22 --memory="${memLimit}" --cpus="${cpuLimit}" ${targetImage} sleep infinity`
+          `${this.dockerBin} run -d --name ${name} --hostname ${name} ` +
+          `--dns 8.8.8.8 --dns 1.1.1.1 -p ${sshPort}:22 ` +
+          `--memory="${memLimit}" --memory-swap="${memLimit}" --cpus="${cpuLimit}" ` +
+          `--pids-limit ${pidsLimit} --security-opt no-new-privileges:true ` +
+          `${targetImage} sleep infinity`
         );
 
-        // 2. Set root password
-        this.run(`docker exec ${name} bash -c "echo 'root:${rootPassword}' | chpasswd"`);
+        // Set root password
+        this.run(`${this.dockerBin} exec ${name} bash -c "echo 'root:${rootPassword}' | chpasswd"`);
 
-        // 3. Background SSH server setup
+        // Template installation script (if selected)
+        const selectedTemplate = config.templates[templateKey];
+        const templateScript = selectedTemplate && selectedTemplate.script ? selectedTemplate.script : '';
+
+        // Base SSH & environment setup script
         const initScript = `
           apt-get update -y >/dev/null 2>&1
           apt-get install -y openssh-server curl sudo procps net-tools ca-certificates >/dev/null 2>&1 || true
@@ -289,15 +301,18 @@ class ContainerManager {
           sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config 2>/dev/null || true
           sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || true
           service ssh restart >/dev/null 2>&1 || /etc/init.d/ssh restart >/dev/null 2>&1 || true
+          ${templateScript}
         `;
-        exec(`docker exec ${name} bash -c "${initScript.replace(/\n/g, ' ')}"`);
 
-        // 4. Start Host-level ttyd attached directly to this container's interactive shell
+        // Run setup in background
+        exec(`${this.dockerBin} exec ${name} bash -c "${initScript.replace(/\n/g, ' ')}"`);
+
+        // Start Host-level ttyd attached directly to this container
         exec(
-          `nohup ttyd -p ${webPort} -i 127.0.0.1 -c root:${rootPassword} -W docker exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
+          `nohup ttyd -p ${webPort} -i 127.0.0.1 -c root:${rootPassword} -W ${this.dockerBin} exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
         );
 
-        // 5. Open Public Web Tunnel (Worker Bridge / Ngrok / LocalTunnel)
+        // Open Public Web Tunnel
         let webTerminalUrl = await this.createPublicTunnel(name, webPort);
         if (!webTerminalUrl) {
           webTerminalUrl = this.getWebTerminalUrl(webPort);
@@ -313,23 +328,29 @@ class ContainerManager {
         };
       } catch (err) {
         try {
-          this.run(`docker rm -f ${name}`);
+          this.run(`${this.dockerBin} rm -f ${name}`);
         } catch {}
         throw new Error(`Failed to create Docker VPS: ${err.message}`);
       }
     } else {
       // LXD Engine fallback
-      const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
       try {
-        this.run(`${lxcBin} launch ${targetImage} ${name}`);
-        if (cpu) this.run(`${lxcBin} config set ${name} limits.cpu ${cpu}`);
-        if (ram) this.run(`${lxcBin} config set ${name} limits.memory ${ram}`);
-        this.run(`${lxcBin} exec ${name} -- bash -c "echo 'root:${rootPassword}' | chpasswd"`);
+        this.run(`${this.lxcBin} launch ${targetImage} ${name}`);
+        if (cpu) this.run(`${this.lxcBin} config set ${name} limits.cpu ${cpu}`);
+        if (ram) this.run(`${this.lxcBin} config set ${name} limits.memory ${ram}`);
+        this.run(`${this.lxcBin} config set ${name} limits.processes ${pidsLimit}`);
+        this.run(`${this.lxcBin} exec ${name} -- bash -c "echo 'root:${rootPassword}' | chpasswd"`);
+
+        const selectedTemplate = config.templates[templateKey];
+        if (selectedTemplate && selectedTemplate.script) {
+          exec(`${this.lxcBin} exec ${name} -- bash -c "${selectedTemplate.script.replace(/\n/g, ' ')}"`);
+        }
+
         const webTerminalUrl = this.createWorkerBridge(name) || this.getWebTerminalUrl(22);
         return { success: true, password: rootPassword, sshPort: 22, webPort: null, webTerminalUrl, hostIp };
       } catch (err) {
         try {
-          this.run(`${lxcBin} delete -f ${name}`);
+          this.run(`${this.lxcBin} delete -f ${name}`);
         } catch {}
         throw new Error(`Failed to create LXD VPS: ${err.message}`);
       }
@@ -338,18 +359,25 @@ class ContainerManager {
 
   start(name) {
     if (this.engine === 'docker') {
-      this.run(`docker start ${name}`);
+      this.run(`${this.dockerBin} start ${name}`);
+      // Re-establish worker bridge on start
+      if (config.proxyUrl) {
+        setTimeout(() => this.createWorkerBridge(name), 1000);
+      }
     } else {
-      const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
-      this.run(`${lxcBin} start ${name}`);
+      this.run(`${this.lxcBin} start ${name}`);
+      if (config.proxyUrl) {
+        setTimeout(() => this.createWorkerBridge(name), 1000);
+      }
     }
   }
 
   stop(name) {
     if (this.engine === 'docker') {
-      this.run(`docker stop ${name}`);
+      this.run(`${this.dockerBin} stop ${name}`);
       exec(`pkill -f "ttyd.*${name}" 2>/dev/null || true`);
       if (this.workerBridges[name]) {
+        if (this.workerBridges[name].pingInterval) clearInterval(this.workerBridges[name].pingInterval);
         try { this.workerBridges[name].ws.close(); } catch {}
         try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
         delete this.workerBridges[name];
@@ -359,26 +387,27 @@ class ContainerManager {
         delete this.ngrokListeners[name];
       }
     } else {
-      const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
-      this.run(`${lxcBin} stop ${name} --force`);
+      this.run(`${this.lxcBin} stop ${name} --force`);
+      if (this.workerBridges[name]) {
+        if (this.workerBridges[name].pingInterval) clearInterval(this.workerBridges[name].pingInterval);
+        try { this.workerBridges[name].ws.close(); } catch {}
+        try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
+        delete this.workerBridges[name];
+      }
     }
   }
 
   restart(name) {
-    if (this.engine === 'docker') {
-      this.run(`docker restart ${name}`);
-    } else {
-      const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
-      this.run(`${lxcBin} restart ${name}`);
-    }
+    this.stop(name);
+    setTimeout(() => this.start(name), 1500);
   }
 
   delete(name) {
     if (this.engine === 'docker') {
-      this.run(`docker rm -f ${name}`);
+      this.run(`${this.dockerBin} rm -f ${name}`);
       exec(`pkill -f "ttyd.*${name}" 2>/dev/null || true`);
-      exec(`pkill -f "cloudflared.*${name}" 2>/dev/null || true`);
       if (this.workerBridges[name]) {
+        if (this.workerBridges[name].pingInterval) clearInterval(this.workerBridges[name].pingInterval);
         try { this.workerBridges[name].ws.close(); } catch {}
         try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
         delete this.workerBridges[name];
@@ -388,15 +417,20 @@ class ContainerManager {
         delete this.ngrokListeners[name];
       }
     } else {
-      const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
-      this.run(`${lxcBin} delete -f ${name}`);
+      this.run(`${this.lxcBin} delete -f ${name}`);
+      if (this.workerBridges[name]) {
+        if (this.workerBridges[name].pingInterval) clearInterval(this.workerBridges[name].pingInterval);
+        try { this.workerBridges[name].ws.close(); } catch {}
+        try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
+        delete this.workerBridges[name];
+      }
     }
   }
 
   getInfo(name) {
     try {
       if (this.engine === 'docker') {
-        const inspectOut = this.run(`docker inspect ${name}`);
+        const inspectOut = this.run(`${this.dockerBin} inspect ${name}`);
         const data = JSON.parse(inspectOut)[0];
         if (!data) return null;
 
@@ -412,10 +446,10 @@ class ContainerManager {
           sshPort,
           memoryUsage: isRunning ? 'Active' : 'Offline',
           engine: 'Docker',
+          hostIp,
         };
       } else {
-        const lxcBin = fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc';
-        const output = this.run(`${lxcBin} list ${name} --format json`);
+        const output = this.run(`${this.lxcBin} list ${name} --format json`);
         const list = JSON.parse(output);
         if (!list || list.length === 0) return null;
 
@@ -431,6 +465,7 @@ class ContainerManager {
           sshPort: '22',
           memoryUsage: info.state?.memory?.usage ? `${Math.round(info.state.memory.usage / 1024 / 1024)} MB` : 'N/A',
           engine: 'LXD',
+          hostIp: this.getHostPublicIP(),
         };
       }
     } catch {
@@ -438,11 +473,70 @@ class ContainerManager {
     }
   }
 
+  // Backup / Snapshot
+  createBackup(name) {
+    const timestamp = Date.now();
+    const tag = `backup-${name}-${timestamp}`;
+    if (this.engine === 'docker') {
+      this.run(`${this.dockerBin} commit ${name} ${tag}`);
+      return { tag, timestamp };
+    } else {
+      this.run(`${this.lxcBin} snapshot ${name} ${tag}`);
+      return { tag, timestamp };
+    }
+  }
+
+  // Restore from Backup
+  restoreBackup(name, tag) {
+    if (this.engine === 'docker') {
+      const inspectOut = this.run(`${this.dockerBin} inspect ${name}`);
+      const data = JSON.parse(inspectOut)[0];
+      const ports = data.HostConfig?.PortBindings || {};
+      const sshPort = ports['22/tcp']?.[0]?.HostPort || this.getRandomPort(20000, 34000);
+      
+      this.run(`${this.dockerBin} rm -f ${name}`);
+      this.run(`${this.dockerBin} run -d --name ${name} --hostname ${name} -p ${sshPort}:22 ${tag} sleep infinity`);
+      return true;
+    } else {
+      this.run(`${this.lxcBin} restore ${name} ${tag}`);
+      return true;
+    }
+  }
+
+  // Expose / Forward Port
+  exposePort(name, containerPort) {
+    const hostPort = this.getRandomPort(30000, 45000);
+    const hostIp = this.getHostPublicIP();
+
+    if (this.engine === 'docker') {
+      const inspectOut = this.run(`${this.dockerBin} inspect ${name}`);
+      const data = JSON.parse(inspectOut)[0];
+      const ip = data.NetworkSettings?.IPAddress;
+      if (!ip) throw new Error('Container IP not available. Ensure container is running.');
+
+      exec(
+        `nohup socat TCP-LISTEN:${hostPort},fork,reuseaddr TCP:${ip}:${containerPort} > /tmp/socat_${name}_${hostPort}.log 2>&1 &`
+      );
+
+      return { hostPort, containerPort, hostIp, publicUrl: `http://${hostIp}:${hostPort}` };
+    } else {
+      const deviceName = `port-${containerPort}`;
+      try {
+        this.run(`${this.lxcBin} config device add ${name} ${deviceName} proxy listen=tcp:0.0.0.0:${hostPort} connect=tcp:127.0.0.1:${containerPort}`);
+      } catch (e) {
+        const info = this.getInfo(name);
+        if (info && info.ipv4 && info.ipv4 !== 'N/A') {
+          exec(`nohup socat TCP-LISTEN:${hostPort},fork,reuseaddr TCP:${info.ipv4}:${containerPort} > /dev/null 2>&1 &`);
+        }
+      }
+      return { hostPort, containerPort, hostIp, publicUrl: `http://${hostIp}:${hostPort}` };
+    }
+  }
+
   async createWebTerminal(name) {
     const vps = db.getVPS(name);
     if (!vps) throw new Error('VPS not found in database.');
 
-    // 1. Worker bridge
     if (config.proxyUrl) {
       const workerUrl = this.createWorkerBridge(name);
       if (workerUrl) {
