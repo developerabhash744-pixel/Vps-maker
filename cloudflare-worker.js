@@ -1,24 +1,61 @@
 /**
  * Cloudflare Worker for VPS Discord Bot:
  * 1. Discord Gateway & REST API Proxy (bypasses egress firewall)
- * 2. Secure In-Browser Web Terminal (xterm.js) + Realtime WebSocket Bridge
+ * 2. Globally Synchronized In-Browser Web Terminal (xterm.js) via Durable Object
  */
 
-// In-memory active tunnel sessions (per edge instance)
-const sessions = new Map();
+import { DurableObject } from 'cloudflare:workers';
 
-export default {
-  async fetch(request, env, ctx) {
+// =============================================================================
+// Durable Object: Global Single Point of Presence per Container Session
+// =============================================================================
+export class TerminalSession extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.token = null;
+    this.agentWs = null;
+    this.browserWs = null;
+  }
+
+  async fetch(request) {
     const url = new URL(request.url);
+    const token = url.searchParams.get('token');
 
-    // =========================================================================
-    // 1. Web Terminal UI Route: /term/:containerName?token=XYZ
-    // =========================================================================
-    if (url.pathname.startsWith('/term/')) {
+    // 1. Daytona Host Agent Tunnel: /tunnel/:containerName?token=XYZ
+    if (url.pathname.startsWith('/tunnel')) {
+      if (request.headers.get('Upgrade') !== 'websocket') {
+        return new Response('Expected WebSocket upgrade', { status: 426 });
+      }
+
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      server.accept();
+
+      this.token = token;
+      this.agentWs = server;
+
+      server.addEventListener('message', (event) => {
+        if (this.browserWs && this.browserWs.readyState === WebSocket.OPEN) {
+          this.browserWs.send(event.data);
+        }
+      });
+
+      server.addEventListener('close', () => {
+        if (this.browserWs) {
+          this.browserWs.send('\r\n\x1b[33m[Host disconnected container session]\x1b[0m\r\n');
+          this.browserWs.close();
+        }
+        this.agentWs = null;
+      });
+
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    // 2. Web Terminal UI Route: /term/:containerName?token=XYZ
+    if (url.pathname.startsWith('/term')) {
+      const isWs = url.pathname.endsWith('/ws') || request.headers.get('Upgrade') === 'websocket';
       const parts = url.pathname.split('/').filter(Boolean);
-      const name = parts[1];
-      const isWs = parts[2] === 'ws' || request.headers.get('Upgrade') === 'websocket';
-      const token = url.searchParams.get('token');
+      const name = parts[1] || 'vps';
 
       // Serve HTML Web Terminal UI
       if (!isWs) {
@@ -28,77 +65,109 @@ export default {
       }
 
       // Handle Browser WebSocket Connection
-      if (request.headers.get('Upgrade') === 'websocket') {
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      server.accept();
+
+      if (!this.agentWs || (this.token && this.token !== token)) {
+        server.send('\r\n\x1b[31m[Error]: Terminal session not active or invalid token.\x1b[0m\r\n');
+        setTimeout(() => server.close(1008, 'Session not found'), 1000);
+        return new Response(null, { status: 101, webSocket: client });
+      }
+
+      this.browserWs = server;
+
+      server.addEventListener('message', (event) => {
+        if (this.agentWs && this.agentWs.readyState === WebSocket.OPEN) {
+          this.agentWs.send(event.data);
+        }
+      });
+
+      server.addEventListener('close', () => {
+        this.browserWs = null;
+      });
+
+      server.send('\r\n\x1b[32m[Connected to Container Web Terminal]\x1b[0m\r\n\r\n');
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    return new Response('Not found', { status: 404 });
+  }
+}
+
+// Fallback in-memory map if Durable Objects are not bound
+const fallbackSessions = new Map();
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // =========================================================================
+    // 1. Web Terminal & Tunnel Routes
+    // =========================================================================
+    if (url.pathname.startsWith('/term/') || url.pathname.startsWith('/tunnel/')) {
+      const parts = url.pathname.split('/').filter(Boolean);
+      const name = parts[1];
+
+      // Route through Durable Object for global session synchronization
+      if (env.TERMINAL_SESSION) {
+        const id = env.TERMINAL_SESSION.idFromName(name);
+        const stub = env.TERMINAL_SESSION.get(id);
+        return stub.fetch(request);
+      }
+
+      // Fallback in-memory handler
+      if (url.pathname.startsWith('/term/')) {
+        const isWs = parts[2] === 'ws' || request.headers.get('Upgrade') === 'websocket';
+        const token = url.searchParams.get('token');
+
+        if (!isWs) {
+          return new Response(getTerminalHTML(name, token), {
+            headers: { 'Content-Type': 'text/html;charset=utf-8' },
+          });
+        }
+
+        if (request.headers.get('Upgrade') === 'websocket') {
+          const pair = new WebSocketPair();
+          const [client, server] = Object.values(pair);
+          server.accept();
+
+          const session = fallbackSessions.get(name);
+          if (!session || (session.token && session.token !== token)) {
+            server.send('\r\n\x1b[31m[Error]: Terminal session not active or invalid token.\x1b[0m\r\n');
+            setTimeout(() => server.close(1008, 'Session not found'), 1000);
+            return new Response(null, { status: 101, webSocket: client });
+          }
+
+          session.browserWs = server;
+          server.addEventListener('message', (e) => session.agentWs?.send(e.data));
+          server.addEventListener('close', () => { session.browserWs = null; });
+          server.send('\r\n\x1b[32m[Connected to Container Web Terminal]\x1b[0m\r\n\r\n');
+          return new Response(null, { status: 101, webSocket: client });
+        }
+      }
+
+      if (url.pathname.startsWith('/tunnel/')) {
+        const token = url.searchParams.get('token');
+        if (request.headers.get('Upgrade') !== 'websocket') {
+          return new Response('Expected WebSocket upgrade', { status: 426 });
+        }
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
         server.accept();
-
-        const session = sessions.get(name);
-        if (!session || (session.token && session.token !== token)) {
-          server.send('\r\n\x1b[31m[Error]: Terminal session not active or invalid token.\x1b[0m\r\n');
-          setTimeout(() => server.close(1008, 'Session not found'), 1000);
-          return new Response(null, { status: 101, webSocket: client });
-        }
-
-        session.browserWs = server;
-
-        server.addEventListener('message', (event) => {
-          if (session.agentWs && session.agentWs.readyState === WebSocket.OPEN) {
-            session.agentWs.send(event.data);
-          }
-        });
-
+        const session = { name, token, agentWs: server, browserWs: null };
+        fallbackSessions.set(name, session);
+        server.addEventListener('message', (e) => session.browserWs?.send(e.data));
         server.addEventListener('close', () => {
-          session.browserWs = null;
+          session.browserWs?.close();
+          fallbackSessions.delete(name);
         });
-
-        server.send('\r\n\x1b[32m[Connected to Container Web Terminal]\x1b[0m\r\n\r\n');
         return new Response(null, { status: 101, webSocket: client });
       }
     }
 
     // =========================================================================
-    // 2. Daytona Host Agent Tunnel: /tunnel/:containerName?token=XYZ
-    // =========================================================================
-    if (url.pathname.startsWith('/tunnel/')) {
-      const name = url.pathname.split('/')[2];
-      const token = url.searchParams.get('token');
-
-      if (request.headers.get('Upgrade') !== 'websocket') {
-        return new Response('Expected WebSocket upgrade', { status: 426 });
-      }
-
-      const pair = new WebSocketPair();
-      const [client, server] = Object.values(pair);
-      server.accept();
-
-      const session = {
-        name,
-        token,
-        agentWs: server,
-        browserWs: null,
-      };
-      sessions.set(name, session);
-
-      server.addEventListener('message', (event) => {
-        if (session.browserWs && session.browserWs.readyState === WebSocket.OPEN) {
-          session.browserWs.send(event.data);
-        }
-      });
-
-      server.addEventListener('close', () => {
-        if (session.browserWs) {
-          session.browserWs.send('\r\n\x1b[33m[Host disconnected container session]\x1b[0m\r\n');
-          session.browserWs.close();
-        }
-        sessions.delete(name);
-      });
-
-      return new Response(null, { status: 101, webSocket: client });
-    }
-
-    // =========================================================================
-    // 3. Discord Gateway & REST API Proxy
+    // 2. Discord Gateway & REST API Proxy
     // =========================================================================
     const isWebSocket = request.headers.get('Upgrade') === 'websocket';
     let targetUrl;
