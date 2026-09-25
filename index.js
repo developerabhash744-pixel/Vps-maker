@@ -248,6 +248,35 @@ async function bootstrap() {
         });
       }
 
+      // Apply server invite booster
+      if (action === 'applyboost') {
+        const invitesCount = await vpsCommand.fetchUserInvites(interaction.guild, userId);
+        const boostInfo = vpsCommand.calculateBoostTier(invitesCount);
+
+        try {
+          container.updateContainerResources(name, boostInfo.ram, boostInfo.cpu);
+          db.setVPS(name, {
+            ...vpsRecord,
+            ram: boostInfo.ram,
+            cpu: boostInfo.cpu,
+            disk: boostInfo.disk,
+            boostTier: boostInfo.tierName,
+          });
+
+          return interaction.reply({
+            content:
+              `⚡ **Invite Boost Applied!**\n\n` +
+              `Container: \`${name}\`\n` +
+              `Server Invites: **${invitesCount} Joins**\n` +
+              `Unlocked Tier: **${boostInfo.tierName}**\n` +
+              `New Specs: **${boostInfo.ram} RAM • ${boostInfo.cpu} vCPU • ${boostInfo.disk} Disk**`,
+            flags: MessageFlags.Ephemeral,
+          });
+        } catch (err) {
+          return interaction.reply({ content: `❌ Failed to update container specs: ${err.message}`, flags: MessageFlags.Ephemeral });
+        }
+      }
+
       if (action === 'stats') {
         const stats = container.getLiveStats(name);
         if (!stats) {
@@ -305,7 +334,8 @@ async function bootstrap() {
               .setDescription(`Use the interactive buttons below to manage your container power and snapshots in real time.`)
               .addFields(
                 { name: 'Status', value: isRunning ? '🟢 Running' : '🔴 Stopped', inline: true },
-                { name: 'Plan', value: `${planInfo.name} (${planInfo.cpu} vCPU, ${planInfo.ram})`, inline: true },
+                { name: 'Allocated Specs', value: `**${updatedRecord.ram || '32GiB'} RAM • ${updatedRecord.cpu || '1'} vCPU**`, inline: true },
+                { name: 'Booster Tier', value: `${updatedRecord.boostTier || 'Base Free Starter'}`, inline: true },
                 { name: 'Template', value: `${templateInfo.name}`, inline: true },
                 { name: 'Internal IP', value: `\`${live?.ipv4 || 'None'}\``, inline: true },
                 { name: 'SSH Port', value: `\`${updatedRecord.sshPort || live?.sshPort || '22'}\``, inline: true },
@@ -319,16 +349,22 @@ async function bootstrap() {
               .setFooter({ text: `${config.hostingName} • Interactive Control Panel` });
 
             const components = [vpsCommand.buildControlButtons(name, isRunning)];
+            const actionRow2 = new ActionRowBuilder();
             if (updatedRecord.webTerminalUrl) {
-              components.push(
-                new ActionRowBuilder().addComponents(
-                  new ButtonBuilder()
-                    .setLabel('🚀 Open Web Terminal')
-                    .setURL(updatedRecord.webTerminalUrl)
-                    .setStyle(ButtonStyle.Link)
-                )
+              actionRow2.addComponents(
+                new ButtonBuilder()
+                  .setLabel('🚀 Open Web Terminal')
+                  .setURL(updatedRecord.webTerminalUrl)
+                  .setStyle(ButtonStyle.Link)
               );
             }
+            actionRow2.addComponents(
+              new ButtonBuilder()
+                .setCustomId(`vps_btn_applyboost_${name}`)
+                .setLabel('⚡ Claim Invite Boost')
+                .setStyle(ButtonStyle.Success)
+            );
+            components.push(actionRow2);
 
             await interaction.editReply({ embeds: [embed], components });
           } catch (e) {

@@ -329,6 +329,29 @@ class ContainerManager {
     }
   }
 
+  // Dynamically update container CPU and RAM (Invite Boosters)
+  updateContainerResources(name, ram, cpu) {
+    const memLimit = this.formatDockerMemory(ram);
+    const cpuLimit = cpu || '1';
+
+    if (this.engine === 'docker') {
+      try {
+        this.run(`${this.dockerBin} update --memory="${memLimit}" --memory-swap="${memLimit}" --cpus="${cpuLimit}" ${name}`);
+        return true;
+      } catch (err) {
+        throw new Error(`Failed to update Docker resources: ${err.message}`);
+      }
+    } else {
+      try {
+        if (cpu) this.run(`${this.lxcBin} config set ${name} limits.cpu ${cpu}`);
+        if (ram) this.run(`${this.lxcBin} config set ${name} limits.memory ${ram}`);
+        return true;
+      } catch (err) {
+        throw new Error(`Failed to update LXD resources: ${err.message}`);
+      }
+    }
+  }
+
   stop(name) {
     if (this.engine === 'docker') {
       this.run(`${this.dockerBin} stop ${name}`);

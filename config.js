@@ -17,12 +17,54 @@ module.exports = {
   pidsLimit: parseInt(process.env.PIDS_LIMIT, 10) || 250,
   gracePeriodHours: 48, // Auto-purge containers stopped & expired > 48 hours
 
+  // Base Free Plan for Every Member
+  plans: {
+    free: {
+      name: 'Free Starter Plan',
+      cpu: '1',
+      ram: '32GiB',
+      disk: '16GiB',
+      durationDays: 30,
+      adminOnly: false,
+    },
+  },
+
+  // Invite-Based Extension Tiers (Cumulative / Milestone Upgrades)
+  inviteBoosters: [
+    {
+      minInvites: 2,
+      name: 'Tier 1 Boost (2 Invites)',
+      ramBoostGiB: 5,     // +5GB RAM -> 37GB Total
+      cpuBoost: 1,        // +1 Core -> 2 Cores Total
+      diskBoostGiB: 5,    // +5GB Disk -> 21GB Total
+    },
+    {
+      minInvites: 12,
+      name: 'Tier 2 Boost (12 Invites)',
+      ramBoostGiB: 40,    // +40GB RAM -> 72GB Total
+      cpuBoost: 2,        // +2 Cores -> 3 Cores Total
+      diskBoostGiB: 20,   // +20GB Disk -> 36GB Total
+    },
+    {
+      minInvites: 20,
+      name: 'Tier 3 Boost (20 Invites)',
+      ramBoostGiB: 50,    // +50GB RAM -> 82GB Total
+      cpuBoost: 4,        // +4 Cores -> 5 Cores Total
+      diskBoostGiB: 32,   // +32GB Disk -> 48GB Total
+    },
+    {
+      minInvites: 30,
+      name: 'Tier 4 Max Boost (30 Invites)',
+      ramBoostGiB: 64,    // +64GB RAM -> 96GB Total
+      cpuBoost: 12,       // +12 Cores -> 13 Cores Total
+      diskBoostGiB: 40,   // +40GB Disk -> 56GB Total
+    },
+  ],
+
   // Economy & Coins
   dailyRewardCoins: 50,
   costs: {
     renew7Days: 100,
-    upgradeBronze: 250,
-    upgradeSilver: 500,
   },
 
   // Dangerous commands blacklist for in-discord /vps exec
@@ -36,42 +78,6 @@ module.exports = {
     '> /dev/vda',
     'rm -rf --no-preserve-root /',
   ],
-
-  // Resource Plans (Free is public, all higher tiers are Admin / VIP only)
-  plans: {
-    free: {
-      name: 'Free Starter',
-      cpu: '1',
-      ram: '1GiB',
-      disk: '10GiB',
-      durationDays: 7,
-      adminOnly: false,
-    },
-    bronze: {
-      name: 'Bronze Plan [Admin / VIP]',
-      cpu: '2',
-      ram: '2GiB',
-      disk: '20GiB',
-      durationDays: 30,
-      adminOnly: true,
-    },
-    silver: {
-      name: 'Silver Plan [Admin / VIP]',
-      cpu: '4',
-      ram: '4GiB',
-      disk: '40GiB',
-      durationDays: 30,
-      adminOnly: true,
-    },
-    gold: {
-      name: 'Gold Plan [Admin / VIP]',
-      cpu: '8',
-      ram: '8GiB',
-      disk: '80GiB',
-      durationDays: 60,
-      adminOnly: true,
-    },
-  },
 
   // 1-Click Application Templates
   templates: {
