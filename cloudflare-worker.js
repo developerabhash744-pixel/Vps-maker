@@ -653,6 +653,7 @@ function getTerminalHTML(name, token) {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = protocol + '//' + location.host + '/term/${encodeURIComponent(name)}/ws?token=${encodeURIComponent(token || '')}';
     const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
 
     const statusText = document.getElementById('status-text');
     const statusDot = document.getElementById('status-dot');
@@ -664,18 +665,22 @@ function getTerminalHTML(name, token) {
       statusDot.style.background = '#00FF88';
       statusPill.style.borderColor = 'rgba(0, 255, 136, 0.4)';
       if (terminals['card-1']) terminals['card-1'].term.focus();
-      setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send('\\r'); }, 300);
+      setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send('\r'); }, 300);
     };
 
     ws.onmessage = async (e) => {
-      let data;
+      let data = '';
       if (typeof e.data === 'string') {
         data = e.data;
       } else if (e.data instanceof ArrayBuffer) {
         data = new TextDecoder().decode(e.data);
       } else if (e.data instanceof Blob) {
         data = await e.data.text();
+      } else if (e.data) {
+        data = new TextDecoder().decode(e.data);
       }
+
+      if (!data) return;
 
       // Broadcast output to all terminal windows on canvas
       Object.values(terminals).forEach(({ term }) => {
