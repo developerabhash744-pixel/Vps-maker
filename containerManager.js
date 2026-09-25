@@ -140,12 +140,23 @@ class ContainerManager {
           }
         }, 15000);
 
+        const dockerBin = fs.existsSync('/usr/bin/docker')
+          ? '/usr/bin/docker'
+          : (fs.existsSync('/usr/local/bin/docker') ? '/usr/local/bin/docker' : 'docker');
+        const lxcBin = fs.existsSync('/snap/bin/lxc')
+          ? '/snap/bin/lxc'
+          : (fs.existsSync('/usr/bin/lxc') ? '/usr/bin/lxc' : 'lxc');
+
         const innerCmd = this.engine === 'docker'
-          ? `docker exec -it ${name} bash`
-          : `lxc exec ${name} -- bash`;
+          ? `${dockerBin} exec -it ${name} bash`
+          : `${lxcBin} exec ${name} -- bash`;
+
+        const fullPath = (process.env.PATH || '') + ':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+
         const proc = spawn('script', ['-qefc', innerCmd, '/dev/null'], {
           env: {
             ...process.env,
+            PATH: fullPath,
             TERM: 'xterm-256color',
             COLUMNS: '120',
             LINES: '30',
@@ -165,19 +176,20 @@ class ContainerManager {
           } catch {}
         });
 
-        ws.on('close', () => {
+        ws.on('close', (code, reason) => {
           if (pingTimer) clearInterval(pingTimer);
           try { proc.kill('SIGKILL'); } catch {}
           delete this.workerBridges[name];
         });
 
-        proc.on('close', () => {
+        proc.on('close', (code) => {
           if (pingTimer) clearInterval(pingTimer);
           try { ws.close(); } catch {}
           delete this.workerBridges[name];
         });
 
         this.workerBridges[name] = { ws, proc, url: webUrl, token };
+        console.log(`[Worker Bridge Connected for ${name}]: ${webUrl}`);
       });
 
       ws.on('error', (err) => {
