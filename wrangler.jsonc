@@ -2,5 +2,13 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "silent-wind-4838",
   "main": "cloudflare-worker.js",
-  "compatibility_date": "2026-09-24"
+  "compatibility_date": "2026-09-24",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TERMINAL_SESSION",
+        "class_name": "TerminalSession"
+      }
+    ]
+  }
 }

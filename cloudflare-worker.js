@@ -4,6 +4,14 @@
  * 2. Secure In-Browser Web Terminal (xterm.js) + Realtime WebSocket Relay
  */
 
+// Durable Object export (required by Cloudflare schema migration)
+export class TerminalSession {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+}
+
 // Active sessions map
 const sessions = new Map();
 
