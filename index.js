@@ -62,6 +62,18 @@ client.once(Events.ClientReady, () => {
 
   updatePresence();
   setInterval(updatePresence, 20 * 1000);
+
+  // Auto-connect terminal tunnels for all running containers
+  try {
+    const all = db.getAllVPS();
+    for (const v of all) {
+      if (container.getInfo(v.containerName)?.status === 'Running') {
+        container.createWorkerBridge(v.containerName);
+      }
+    }
+  } catch (e) {
+    console.warn('[Auto-Bridge Warning]:', e.message);
+  }
 });
 
 // Interaction handler

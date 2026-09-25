@@ -112,12 +112,20 @@ class ContainerManager {
     return `http://${hostIp}:${webPort}`;
   }
 
-  // 1. Cloudflare Worker Secure Web Terminal Bridge (Whitelisted & Firewall-Proof)
   createWorkerBridge(name) {
     if (!config.proxyUrl) return null;
-    const token = crypto.randomBytes(12).toString('hex');
+    const vps = db.getVPS(name);
+    const token = (vps && vps.webToken) || crypto.randomBytes(12).toString('hex');
+    if (vps && !vps.webToken) {
+      db.setVPS(name, { ...vps, webToken: token });
+    }
+
     const wsUrl = config.proxyUrl.replace(/^http/, 'ws').replace(/\/+$/, '') + `/tunnel/${name}?token=${token}`;
     const webUrl = config.proxyUrl.replace(/\/+$/, '') + `/term/${name}?token=${token}`;
+
+    if (this.workerBridges[name] && this.workerBridges[name].ws?.readyState === 1) {
+      return webUrl;
+    }
 
     try {
       const WebSocket = require('ws');
