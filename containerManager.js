@@ -124,15 +124,16 @@ class ContainerManager {
       const ws = new WebSocket(wsUrl);
 
       ws.on('open', () => {
-        console.log(`[Worker Bridge Active for ${name}]: ${webUrl}`);
-        const cmd = this.engine === 'docker' ? 'docker' : (fs.existsSync('/snap/bin/lxc') ? '/snap/bin/lxc' : 'lxc');
-        const args = this.engine === 'docker'
-          ? ['exec', '-i', name, 'bash', '-l']
-          : ['exec', name, '--', 'bash', '-l'];
-
-        const proc = spawn(cmd, args, {
-          env: { ...process.env, TERM: 'xterm-256color' },
-          stdio: ['pipe', 'pipe', 'pipe'],
+        const innerCmd = this.engine === 'docker'
+          ? `docker exec -it ${name} bash`
+          : `lxc exec ${name} -- bash`;
+        const proc = spawn('script', ['-qefc', innerCmd, '/dev/null'], {
+          env: {
+            ...process.env,
+            TERM: 'xterm-256color',
+            COLUMNS: '120',
+            LINES: '30',
+          },
         });
 
         proc.stdout.on('data', (d) => {

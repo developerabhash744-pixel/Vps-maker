@@ -273,12 +273,20 @@ function getTerminalHTML(name, token) {
     const statusMsg = document.getElementById('status-msg');
     const statusDot = document.getElementById('status-dot');
 
+    document.getElementById('terminal-container').addEventListener('click', () => {
+      term.focus();
+    });
+
     ws.onopen = () => {
       statusMsg.innerText = 'Connected';
       statusMsg.style.color = '#00FF88';
       statusDot.style.background = '#00FF88';
       statusDot.style.boxShadow = '0 0 8px #00FF88';
       term.focus();
+      // Send newline to force prompt render
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send('\r');
+      }, 300);
     };
 
     ws.onmessage = (e) => {
