@@ -50,9 +50,9 @@ export default {
         session.browserWs = server;
 
         server.addEventListener('message', (event) => {
-          if (session.agentWs && session.agentWs.readyState === WebSocket.OPEN) {
-            session.agentWs.send(event.data);
-          }
+          try {
+            session.agentWs?.send(event.data);
+          } catch {}
         });
 
         server.addEventListener('close', () => {
@@ -61,10 +61,14 @@ export default {
           }
         });
 
-        if (session.agentWs && session.agentWs.readyState === WebSocket.OPEN) {
-          server.send('\r\n\x1b[32m[Connected to Container Web Terminal]\x1b[0m\r\n\r\n');
+        if (session.agentWs) {
+          try {
+            server.send('\r\n\x1b[32m[Connected to Container Web Terminal]\x1b[0m\r\n\r\n');
+          } catch {}
         } else {
-          server.send('\r\n\x1b[33m[Waiting for container shell connection...]\x1b[0m\r\n');
+          try {
+            server.send('\r\n\x1b[33m[Waiting for container shell connection...]\x1b[0m\r\n');
+          } catch {}
         }
 
         return new Response(null, { status: 101, webSocket: client });
@@ -96,22 +100,24 @@ export default {
         session.token = token;
 
         server.addEventListener('message', (event) => {
-          if (session.browserWs && session.browserWs.readyState === WebSocket.OPEN) {
-            session.browserWs.send(event.data);
-          }
+          try {
+            session.browserWs?.send(event.data);
+          } catch {}
         });
 
         server.addEventListener('close', () => {
-          if (session.browserWs && session.browserWs.readyState === WebSocket.OPEN) {
-            session.browserWs.send('\r\n\x1b[33m[Host disconnected container session]\x1b[0m\r\n');
-          }
+          try {
+            session.browserWs?.send('\r\n\x1b[33m[Host disconnected container session]\x1b[0m\r\n');
+          } catch {}
           if (session.agentWs === server) {
             session.agentWs = null;
           }
         });
 
-        if (session.browserWs && session.browserWs.readyState === WebSocket.OPEN) {
-          session.browserWs.send('\r\n\x1b[32m[Container Terminal Shell Ready]\x1b[0m\r\n\r\n');
+        if (session.browserWs) {
+          try {
+            session.browserWs.send('\r\n\x1b[32m[Connected to Container Web Terminal]\x1b[0m\r\n\r\n');
+          } catch {}
         }
 
         return new Response(null, { status: 101, webSocket: client });
