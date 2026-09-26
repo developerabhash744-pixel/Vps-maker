@@ -10,5 +10,11 @@
         "class_name": "TerminalSession"
       }
     ]
-  }
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["TerminalSession"]
+    }
+  ]
 }
