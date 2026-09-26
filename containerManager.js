@@ -13,6 +13,8 @@ class ContainerManager {
     this.ngrokListeners = {};
     this.workerBridges = {};
     this.cfTunnels = {};
+    this.pinggyTunnels = {};
+    this.lhrTunnels = {};
     this.dockerBin = this.resolveBinary('docker', ['/usr/bin/docker', '/usr/local/bin/docker', '/snap/bin/docker']);
     this.lxcBin = this.resolveBinary('lxc', ['/snap/bin/lxc', '/usr/bin/lxc', '/usr/local/bin/lxc']);
     this.ensureHostTtyd();
@@ -303,9 +305,125 @@ class ContainerManager {
     });
   }
 
+  async createPinggyTunnel(name, port, type = 'http') {
+    return new Promise((resolve) => {
+      let resolved = false;
+      const targetHost = type === 'tcp' ? 'tcp@a.pinggy.io' : 'a.pinggy.io';
+      const proc = spawn('ssh', [
+        '-o', 'StrictHostKeyChecking=no',
+        '-o', 'ServerAliveInterval=30',
+        '-p', '443',
+        '-R', `0:localhost:${port}`,
+        targetHost
+      ]);
+
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
+      }, 8000);
+
+      const checkUrl = (data) => {
+        const text = data.toString();
+        if (type === 'http') {
+          const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.pinggy\.link/);
+          if (match && !resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            this.pinggyTunnels[`${name}_http`] = proc;
+            console.log(`[Pinggy HTTP Tunnel Active for ${name}]:`, match[0]);
+            resolve(match[0]);
+          }
+        } else {
+          const sshMatch = text.match(/ssh\s+-p\s+(\d+)\s+([a-zA-Z0-9-@._]+)/);
+          const tcpMatch = text.match(/([a-zA-Z0-9-]+\.pinggy\.link):(\d+)/);
+          if (sshMatch && !resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            this.pinggyTunnels[`${name}_tcp`] = proc;
+            const fullCmd = `ssh -p ${sshMatch[1]} root@${sshMatch[2].replace(/^[^@]+@/, '')}`;
+            console.log(`[Pinggy SSH Tunnel Active for ${name}]:`, fullCmd);
+            resolve({ command: fullCmd, port: sshMatch[1], host: sshMatch[2] });
+          } else if (tcpMatch && !resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            this.pinggyTunnels[`${name}_tcp`] = proc;
+            const fullCmd = `ssh -p ${tcpMatch[2]} root@${tcpMatch[1]}`;
+            console.log(`[Pinggy SSH Tunnel Active for ${name}]:`, fullCmd);
+            resolve({ command: fullCmd, port: tcpMatch[2], host: tcpMatch[1] });
+          }
+        }
+      };
+
+      proc.stdout.on('data', checkUrl);
+      proc.stderr.on('data', checkUrl);
+      proc.on('error', () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          resolve(null);
+        }
+      });
+    });
+  }
+
+  async createLocalhostRunTunnel(name, port) {
+    return new Promise((resolve) => {
+      let resolved = false;
+      const proc = spawn('ssh', [
+        '-o', 'StrictHostKeyChecking=no',
+        '-o', 'ServerAliveInterval=30',
+        '-R', `80:localhost:${port}`,
+        'nokey@localhost.run'
+      ]);
+
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
+      }, 8000);
+
+      const checkUrl = (data) => {
+        const text = data.toString();
+        const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.(localhost\.run|lhr\.life)/);
+        if (match && !resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          this.lhrTunnels[name] = proc;
+          console.log(`[Localhost.run Tunnel Active for ${name}]:`, match[0]);
+          resolve(match[0]);
+        }
+      };
+
+      proc.stdout.on('data', checkUrl);
+      proc.stderr.on('data', checkUrl);
+      proc.on('error', () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          resolve(null);
+        }
+      });
+    });
+  }
+
   // 2. Public Tunnel Manager
   async createPublicTunnel(name, webPort) {
-    // 1. First priority: Cloudflare Quick Tunnel (cloudflared) - fast, secure HTTPS without WebSocket isolate timeouts
+    // 1. Try Pinggy HTTP (over port 443 SSH - works anywhere)
+    try {
+      const pinggyUrl = await this.createPinggyTunnel(name, webPort, 'http');
+      if (pinggyUrl) return pinggyUrl;
+    } catch {}
+
+    // 2. Try Localhost.run (over SSH)
+    try {
+      const lhrUrl = await this.createLocalhostRunTunnel(name, webPort);
+      if (lhrUrl) return lhrUrl;
+    } catch {}
+
+    // 3. Try Cloudflare Quick Tunnel (cloudflared)
     try {
       const cfUrl = await this.createCloudflaredTunnel(name, webPort);
       if (cfUrl) return cfUrl;
@@ -313,7 +431,7 @@ class ContainerManager {
       console.warn('[Cloudflared tunnel attempt]:', e.message);
     }
 
-    // 2. Second priority: ngrok if token is provided
+    // 4. Try ngrok if token is provided
     if (config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN) {
       try {
         const ngrok = require('@ngrok/ngrok');
@@ -325,7 +443,7 @@ class ContainerManager {
       } catch {}
     }
 
-    // 3. Third priority: Cloudflare Worker Bridge
+    // 5. Try Cloudflare Worker Bridge
     if (config.proxyUrl) {
       try {
         const workerUrl = this.createWorkerBridge(name);
@@ -334,6 +452,17 @@ class ContainerManager {
     }
 
     return this.getWebTerminalUrl(webPort);
+  }
+
+  async createPublicSsh(name, sshPort) {
+    // 1. Try Pinggy TCP Reverse Tunnel (public SSH command)
+    try {
+      const pinggySsh = await this.createPinggyTunnel(name, sshPort, 'tcp');
+      if (pinggySsh && pinggySsh.command) return pinggySsh.command;
+    } catch {}
+
+    const hostIp = this.getHostPublicIP();
+    return `ssh root@${hostIp} -p ${sshPort}`;
   }
 
   // Create Container with Strict Security Quotas & Templates

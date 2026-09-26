@@ -502,6 +502,11 @@ module.exports = {
 
         const expireDate = new Date(Date.now() + plan.durationDays * 24 * 60 * 60 * 1000).toLocaleDateString();
 
+        let sshCmd = `ssh root@${result.hostIp} -p ${result.sshPort}`;
+        try {
+          sshCmd = await container.createPublicSsh(safeName, result.sshPort);
+        } catch {}
+
         const successEmbed = new EmbedBuilder()
           .setColor('#00FF88')
           .setTitle(`✅ VPS Provisioned: ${safeName}`)
@@ -523,8 +528,8 @@ module.exports = {
               inline: false,
             },
             {
-              name: '💻 Direct SSH Login',
-              value: `\`ssh root@${result.hostIp} -p ${result.sshPort}\``,
+              name: '💻 Direct SSH Login Command',
+              value: `\`\`\`bash\n${sshCmd}\n\`\`\``,
               inline: false,
             }
           )
@@ -748,9 +753,11 @@ module.exports = {
     // 9. TERMINAL & SSH LOGIN
     // =========================================================================
     if (sub === 'terminal') {
-      const hostIp = container.getHostPublicIP();
       const sshPort = vpsRecord.sshPort || '22';
-      const sshCmd = `ssh root@${hostIp} -p ${sshPort}`;
+      let sshCmd = `ssh root@${container.getHostPublicIP()} -p ${sshPort}`;
+      try {
+        sshCmd = await container.createPublicSsh(name, sshPort);
+      } catch {}
 
       let webLink = vpsRecord.webTerminalUrl || null;
       try {
