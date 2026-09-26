@@ -245,7 +245,8 @@ class ContainerManager {
         }
       }
     } catch (e) {
-      console.warn(`[Ngrok ${proto} tunnel error for ${name}]:`, e.message);
+      console.warn(`[Ngrok ${proto} tunnel error for ${name}]: ${e.message}`);
+      if (e.cause) console.warn(`  ↳ Cause: ${e.cause.message || e.cause}`);
     }
     return null;
   }
@@ -254,13 +255,17 @@ class ContainerManager {
   createPinggyTunnel(name, port, proto = 'tcp') {
     return new Promise((resolve) => {
       const { spawn } = require('child_process');
-      const targetHost = proto === 'tcp' ? 'tcp@a.pinggy.io' : 'a.pinggy.io';
+      const token = process.env.PINGGY_TOKEN || '';
+      const prefix = token ? `${token}+` : '';
+      const targetHost = proto === 'tcp' ? `${prefix}tcp+json@a.pinggy.io` : `${prefix}json@a.pinggy.io`;
+      
       const args = [
         '-p', '443',
         '-R', `0:localhost:${port}`,
         '-o', 'StrictHostKeyChecking=no',
         '-o', 'UserKnownHostsFile=/dev/null',
         '-o', 'ServerAliveInterval=30',
+        '-o', 'ConnectTimeout=5',
         targetHost
       ];
 
@@ -268,7 +273,8 @@ class ContainerManager {
       let child;
       try {
         child = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-      } catch {
+      } catch (err) {
+        console.warn(`[Pinggy ${proto} spawn error for ${name}]:`, err.message);
         return resolve(null);
       }
 
@@ -280,33 +286,62 @@ class ContainerManager {
       }, 7000);
 
       const handleData = (data) => {
-        const text = data.toString();
-        if (proto === 'tcp') {
-          const match = text.match(/tcp:\/\/([^:\s]+):(\d+)/i) || text.match(/ssh\s+-p\s+(\d+)\s+([^\s]+)/i);
-          if (match && !resolved) {
-            resolved = true;
-            clearTimeout(timer);
-            const host = match[1].includes('pinggy') ? match[1] : (match[2] || 'a.pinggy.io');
-            const p = match[2] && !match[1].includes('pinggy') ? match[1] : match[2];
-            const sshCmd = `ssh root@${host} -p ${p}`;
-            console.log(`[Pinggy TCP SSH Active for ${name}]:`, sshCmd);
-            this.tunnels[`${name}_pinggy_tcp`] = child;
-            resolve({ command: sshCmd, host, port: p });
-          }
-        } else {
-          const match = text.match(/https?:\/\/[a-z0-9\-\.]+\.a?\.?pinggy\.(link|io)/i);
-          if (match && !resolved) {
-            resolved = true;
-            clearTimeout(timer);
-            this.tunnels[`${name}_pinggy_http`] = child;
-            resolve(match[0]);
+        const lines = data.toString().split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          
+          // 1. Try parsing JSON output from Pinggy
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed.url && !resolved) {
+              resolved = true;
+              clearTimeout(timer);
+              if (proto === 'tcp') {
+                const host = parsed.host || parsed.url.replace(/^tcp:\/\//, '').split(':')[0] || 'a.pinggy.io';
+                const p = parsed.port || parsed.url.split(':').pop();
+                const sshCmd = `ssh root@${host} -p ${p}`;
+                console.log(`[Pinggy TCP SSH Active for ${name}]:`, sshCmd);
+                this.tunnels[`${name}_pinggy_tcp`] = child;
+                return resolve({ command: sshCmd, host, port: p });
+              } else {
+                console.log(`[Pinggy HTTP Tunnel Active for ${name}]:`, parsed.url);
+                this.tunnels[`${name}_pinggy_http`] = child;
+                return resolve(parsed.url);
+              }
+            }
+          } catch {}
+
+          // 2. Fallback to Regex matching
+          if (proto === 'tcp') {
+            const match = trimmed.match(/tcp:\/\/([^:\s]+):(\d+)/i) || trimmed.match(/ssh\s+-p\s+(\d+)\s+([^\s]+)/i);
+            if (match && !resolved) {
+              resolved = true;
+              clearTimeout(timer);
+              const host = match[1].includes('pinggy') ? match[1] : (match[2] || 'a.pinggy.io');
+              const p = match[2] && !match[1].includes('pinggy') ? match[1] : match[2];
+              const sshCmd = `ssh root@${host} -p ${p}`;
+              console.log(`[Pinggy TCP SSH Active for ${name}]:`, sshCmd);
+              this.tunnels[`${name}_pinggy_tcp`] = child;
+              return resolve({ command: sshCmd, host, port: p });
+            }
+          } else {
+            const match = trimmed.match(/https?:\/\/[a-z0-9\-\.]+\.a?\.?pinggy\.(link|io)/i);
+            if (match && !resolved) {
+              resolved = true;
+              clearTimeout(timer);
+              console.log(`[Pinggy HTTP Tunnel Active for ${name}]:`, match[0]);
+              this.tunnels[`${name}_pinggy_http`] = child;
+              return resolve(match[0]);
+            }
           }
         }
       };
 
       child.stdout.on('data', handleData);
       child.stderr.on('data', handleData);
-      child.on('error', () => {
+      child.on('error', (err) => {
+        console.warn(`[Pinggy ${proto} error for ${name}]:`, err.message);
         if (!resolved) {
           resolved = true;
           clearTimeout(timer);
