@@ -12,9 +12,11 @@ class ContainerManager {
     this.tunnels = {};
     this.ngrokListeners = {};
     this.workerBridges = {};
+    this.cfTunnels = {};
     this.dockerBin = this.resolveBinary('docker', ['/usr/bin/docker', '/usr/local/bin/docker', '/snap/bin/docker']);
     this.lxcBin = this.resolveBinary('lxc', ['/snap/bin/lxc', '/usr/bin/lxc', '/usr/local/bin/lxc']);
     this.ensureHostTtyd();
+    this.ensureCloudflared();
   }
 
   resolveBinary(name, candidates) {
@@ -48,6 +50,22 @@ class ContainerManager {
         );
       } catch (e) {
         console.warn('[Host ttyd install note]:', e.message);
+      }
+    }
+  }
+
+  ensureCloudflared() {
+    try {
+      this.run('command -v cloudflared');
+    } catch {
+      try {
+        const arch = this.run('uname -m').trim();
+        const cfArch = arch === 'aarch64' || arch === 'arm64' ? 'arm64' : 'amd64';
+        this.run(
+          `curl -fsSLo /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cfArch}" && chmod +x /usr/local/bin/cloudflared`
+        );
+      } catch (e) {
+        console.warn('[Host cloudflared install note]:', e.message);
       }
     }
   }
@@ -230,15 +248,55 @@ class ContainerManager {
     }
   }
 
+  async createCloudflaredTunnel(name, webPort) {
+    this.ensureCloudflared();
+    return new Promise((resolve) => {
+      let resolved = false;
+      const proc = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${webPort}`, '--no-autoupdate']);
+
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
+      }, 7000);
+
+      const checkUrl = (data) => {
+        const text = data.toString();
+        const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/);
+        if (match && !resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          this.cfTunnels[name] = proc;
+          console.log(`[Cloudflared Quick Tunnel Active for ${name}]:`, match[0]);
+          resolve(match[0]);
+        }
+      };
+
+      proc.stderr.on('data', checkUrl);
+      proc.stdout.on('data', checkUrl);
+      proc.on('error', (err) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          console.warn('[Cloudflared spawn error]:', err.message);
+          resolve(null);
+        }
+      });
+    });
+  }
+
   // 2. Public Tunnel Manager
   async createPublicTunnel(name, webPort) {
-    if (config.proxyUrl) {
-      try {
-        const workerUrl = this.createWorkerBridge(name);
-        if (workerUrl) return workerUrl;
-      } catch {}
+    // 1. First priority: Cloudflare Quick Tunnel (cloudflared) - fast, secure HTTPS without WebSocket isolate timeouts
+    try {
+      const cfUrl = await this.createCloudflaredTunnel(name, webPort);
+      if (cfUrl) return cfUrl;
+    } catch (e) {
+      console.warn('[Cloudflared tunnel attempt]:', e.message);
     }
 
+    // 2. Second priority: ngrok if token is provided
     if (config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN) {
       try {
         const ngrok = require('@ngrok/ngrok');
@@ -247,6 +305,14 @@ class ContainerManager {
           this.ngrokListeners[name] = listener;
           return listener.url();
         }
+      } catch {}
+    }
+
+    // 3. Third priority: Cloudflare Worker Bridge
+    if (config.proxyUrl) {
+      try {
+        const workerUrl = this.createWorkerBridge(name);
+        if (workerUrl) return workerUrl;
       } catch {}
     }
 
@@ -664,6 +730,18 @@ class ContainerManager {
     const vps = db.getVPS(name);
     if (!vps) throw new Error('VPS not found in database.');
 
+    if (vps.webPort) {
+      exec(
+        `nohup ttyd -p ${vps.webPort} -i 127.0.0.1 -c root:${vps.password} -W ${this.dockerBin} exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
+      );
+      const url = await this.createPublicTunnel(name, vps.webPort);
+      if (url) {
+        db.setVPS(name, { ...vps, webTerminalUrl: url });
+        return url;
+      }
+      return this.getWebTerminalUrl(vps.webPort);
+    }
+
     if (config.proxyUrl) {
       const workerUrl = this.createWorkerBridge(name);
       if (workerUrl) {
@@ -672,14 +750,6 @@ class ContainerManager {
       }
     }
 
-    if (vps.webPort) {
-      const url = await this.createPublicTunnel(name, vps.webPort);
-      if (url) {
-        db.setVPS(name, { ...vps, webTerminalUrl: url });
-        return url;
-      }
-      return this.getWebTerminalUrl(vps.webPort);
-    }
     if (vps.webTerminalUrl) return vps.webTerminalUrl;
     throw new Error('Web terminal is not configured for this container.');
   }
