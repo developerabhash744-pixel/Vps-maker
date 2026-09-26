@@ -630,6 +630,7 @@ module.exports = {
           { name: 'Owner', value: `<@${vpsRecord.ownerId}>`, inline: true },
           { name: 'Expires', value: `${expireStr}`, inline: true },
           { name: 'OS Image', value: `\`${vpsRecord.image || 'ubuntu'}\``, inline: true },
+          { name: '💻 Direct SSH Login', value: `\`ssh root@${container.getHostPublicIP()} -p ${vpsRecord.sshPort || '22'}\``, inline: false },
           { name: '🌐 Forwarded Ports', value: exposed, inline: false },
           { name: '📸 Snapshots & Backups', value: backups, inline: false }
         )
@@ -744,45 +745,57 @@ module.exports = {
     }
 
     // =========================================================================
-    // 9. TERMINAL
+    // 9. TERMINAL & SSH LOGIN
     // =========================================================================
     if (sub === 'terminal') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const hostIp = container.getHostPublicIP();
+      const sshPort = vpsRecord.sshPort || '22';
+      const sshCmd = `ssh root@${hostIp} -p ${sshPort}`;
+
+      let webLink = vpsRecord.webTerminalUrl || null;
       try {
-        const link = await container.createWebTerminal(name);
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setLabel('🚀 Launch Web Terminal').setURL(link).setStyle(ButtonStyle.Link)
-        );
+        webLink = await container.createWebTerminal(name);
+      } catch {}
 
-        const embed = new EmbedBuilder()
-          .setColor('#00FF88')
-          .setTitle(`💻 Web Terminal: ${name}`)
-          .setDescription(
-            `Your interactive browser terminal session is ready!\n\n` +
-            `🔗 **Link:** [Click to open terminal](${link})\n\`${link}\`\n\n` +
-            `⚠️ **Security Notice:** Do not share this link. It provides direct root shell access to your container.`
+      const embed = new EmbedBuilder()
+        .setColor('#00FF88')
+        .setTitle(`💻 Terminal & SSH Login: ${name}`)
+        .setDescription(
+          `Connect directly to your container using any standard SSH client or terminal.\n\n` +
+          `### ⚡ Direct SSH Connection (Recommended)\n` +
+          `Copy and paste this command into **PowerShell, Terminal, Command Prompt, or Termius**:\n` +
+          `\`\`\`bash\n${sshCmd}\n\`\`\`\n` +
+          `🔑 **Username:** \`root\`\n` +
+          `🔒 **Password:** \`${vpsRecord.password || '(Use your container root password)'}\`\n` +
+          `🔌 **Port:** \`${sshPort}\`\n` +
+          (webLink ? `\n🌐 **Web Terminal Link:** [Click here to open](${webLink})\n` : '')
+        )
+        .setFooter({ text: `${config.hostingName} • Direct SSH Shell` });
+
+      const components = [];
+      if (webLink) {
+        components.push(
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setLabel('🚀 Launch Web Terminal').setURL(webLink).setStyle(ButtonStyle.Link)
           )
-          .setFooter({ text: config.hostingName });
+        );
+      }
 
-        let dmSent = false;
-        try {
-          await interaction.user.send({ embeds: [embed], components: [row] });
-          dmSent = true;
-        } catch (e) {
-          console.warn('Could not send DM to user:', e.message);
-        }
+      let dmSent = false;
+      try {
+        await interaction.user.send({ embeds: [embed], components });
+        dmSent = true;
+      } catch (e) {
+        console.warn('Could not send DM to user:', e.message);
+      }
 
-        if (dmSent) {
-          return interaction.editReply({
-            content: `📩 **Web terminal link for \`${name}\` has been sent privately to your DMs.**`,
-            embeds: [],
-            components: [],
-          });
-        } else {
-          return interaction.editReply({ embeds: [embed], components: [row] });
-        }
-      } catch (err) {
-        return interaction.editReply(`❌ Could not open terminal: ${err.message}`);
+      if (dmSent) {
+        return interaction.reply({
+          content: `📩 **SSH login command and credentials for \`${name}\` have been sent privately to your DMs.**`,
+          flags: MessageFlags.Ephemeral,
+        });
+      } else {
+        return interaction.reply({ embeds: [embed], components, flags: MessageFlags.Ephemeral });
       }
     }
 
