@@ -68,6 +68,10 @@ class Database {
     return false;
   }
 
+  deleteVPS(containerName) {
+    return this.removeVPS(containerName);
+  }
+
   // ==========================================
   // Economy & User Methods
   // ==========================================

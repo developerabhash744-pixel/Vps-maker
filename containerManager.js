@@ -347,7 +347,7 @@ class ContainerManager {
       delete this.ngrokListeners[`${name}_http`];
     }
 
-    db.deleteVPS(name);
+    db.removeVPS(name);
   }
 
   rebuildContainer(name, image, templateKey = 'none') {
