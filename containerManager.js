@@ -443,14 +443,6 @@ class ContainerManager {
       } catch {}
     }
 
-    // 5. Try Cloudflare Worker Bridge
-    if (config.proxyUrl) {
-      try {
-        const workerUrl = this.createWorkerBridge(name);
-        if (workerUrl) return workerUrl;
-      } catch {}
-    }
-
     return this.getWebTerminalUrl(webPort);
   }
 
@@ -876,28 +868,23 @@ class ContainerManager {
     const vps = db.getVPS(name);
     if (!vps) throw new Error('VPS not found in database.');
 
-    if (vps.webPort) {
-      exec(
-        `nohup ttyd -p ${vps.webPort} -i 127.0.0.1 -c root:${vps.password} -W ${this.dockerBin} exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
-      );
-      const url = await this.createPublicTunnel(name, vps.webPort);
-      if (url) {
-        db.setVPS(name, { ...vps, webTerminalUrl: url });
-        return url;
-      }
-      return this.getWebTerminalUrl(vps.webPort);
+    const webPort = vps.webPort || this.getRandomPort(34001, 49000);
+    if (!vps.webPort) {
+      db.setVPS(name, { ...vps, webPort });
     }
 
-    if (config.proxyUrl) {
-      const workerUrl = this.createWorkerBridge(name);
-      if (workerUrl) {
-        db.setVPS(name, { ...vps, webTerminalUrl: workerUrl });
-        return workerUrl;
-      }
+    // Ensure ttyd is running on localhost
+    exec(
+      `nohup ttyd -p ${webPort} -i 127.0.0.1 -c root:${vps.password} -W ${this.dockerBin} exec -it ${name} bash > /tmp/ttyd_${name}.log 2>&1 &`
+    );
+
+    const url = await this.createPublicTunnel(name, webPort);
+    if (url) {
+      db.setVPS(name, { ...vps, webTerminalUrl: url, webPort });
+      return url;
     }
 
-    if (vps.webTerminalUrl) return vps.webTerminalUrl;
-    throw new Error('Web terminal is not configured for this container.');
+    return this.getWebTerminalUrl(webPort);
   }
 }
 
