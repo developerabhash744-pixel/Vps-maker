@@ -10,6 +10,8 @@ class ContainerManager {
     this.engine = this.detectEngine();
     this.cachedIP = null;
     this.ngrokListeners = {};
+    this.workerBridges = {};
+    this.tunnels = {};
     this.dockerBin = this.resolveBinary('docker', ['/usr/bin/docker', '/usr/local/bin/docker', '/snap/bin/docker']);
     this.lxcBin = this.resolveBinary('lxc', ['/snap/bin/lxc', '/usr/bin/lxc', '/usr/local/bin/lxc']);
     this.ensureHostTtyd();
@@ -147,7 +149,79 @@ class ContainerManager {
     return '█'.repeat(filled) + '░'.repeat(empty);
   }
 
-  // Ngrok Tunnel Manager (TCP for SSH, HTTP for Web Terminal)
+  // 1. Cloudflare Worker Web Terminal Bridge (Direct WebSocket PTY)
+  createWorkerBridge(name) {
+    if (!config.proxyUrl) return null;
+    const token = crypto.randomBytes(12).toString('hex');
+    const wsUrl = config.proxyUrl.replace(/^http/, 'ws').replace(/\/+$/, '') + `/tunnel/${name}?token=${token}`;
+    const webUrl = config.proxyUrl.replace(/\/+$/, '') + `/term/${name}?token=${token}`;
+
+    try {
+      const WebSocket = require('ws');
+      const ws = new WebSocket(wsUrl);
+
+      if (this.workerBridges[name]) {
+        try { this.workerBridges[name].ws.close(); } catch {}
+        try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
+        if (this.workerBridges[name].pingInterval) clearInterval(this.workerBridges[name].pingInterval);
+        delete this.workerBridges[name];
+      }
+
+      const { spawn } = require('child_process');
+      const proc = this.engine === 'docker'
+        ? spawn(this.dockerBin, ['exec', '-i', name, 'bash'])
+        : spawn(this.lxcBin, ['exec', name, '--', 'bash']);
+
+      ws.on('open', () => {
+        console.log(`[Worker Bridge Active for ${name}]: ${webUrl}`);
+
+        const pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try { ws.ping(); } catch {}
+          }
+        }, 15000);
+
+        proc.stdout.on('data', (data) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(data);
+        });
+
+        proc.stderr.on('data', (data) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(data);
+        });
+
+        ws.on('message', (msg) => {
+          try {
+            proc.stdin.write(msg);
+          } catch {}
+        });
+
+        ws.on('close', () => {
+          clearInterval(pingInterval);
+          try { proc.kill('SIGKILL'); } catch {}
+          delete this.workerBridges[name];
+        });
+
+        proc.on('close', () => {
+          clearInterval(pingInterval);
+          try { ws.close(); } catch {}
+          delete this.workerBridges[name];
+        });
+
+        this.workerBridges[name] = { ws, proc, url: webUrl, token, pingInterval };
+      });
+
+      ws.on('error', (err) => {
+        console.warn(`[Worker Bridge error for ${name}]:`, err.message);
+      });
+
+      return webUrl;
+    } catch (e) {
+      console.warn(`[Worker Bridge exception]:`, e.message);
+      return null;
+    }
+  }
+
+  // 2. Ngrok Tunnel Manager (TCP for SSH, HTTP for Web Terminal)
   async createNgrokTunnel(name, port, proto = 'http') {
     const token = config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN;
     if (!token) return null;
@@ -176,23 +250,141 @@ class ContainerManager {
     return null;
   }
 
+  // 3. Pinggy Tunnel Manager (TCP for SSH, HTTP for Web Terminal)
+  createPinggyTunnel(name, port, proto = 'tcp') {
+    return new Promise((resolve) => {
+      const { spawn } = require('child_process');
+      const targetHost = proto === 'tcp' ? 'tcp@a.pinggy.io' : 'a.pinggy.io';
+      const args = [
+        '-p', '443',
+        '-R', `0:localhost:${port}`,
+        '-o', 'StrictHostKeyChecking=no',
+        '-o', 'UserKnownHostsFile=/dev/null',
+        '-o', 'ServerAliveInterval=30',
+        targetHost
+      ];
+
+      let resolved = false;
+      let child;
+      try {
+        child = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch {
+        return resolve(null);
+      }
+
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
+      }, 7000);
+
+      const handleData = (data) => {
+        const text = data.toString();
+        if (proto === 'tcp') {
+          const match = text.match(/tcp:\/\/([^:\s]+):(\d+)/i) || text.match(/ssh\s+-p\s+(\d+)\s+([^\s]+)/i);
+          if (match && !resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            const host = match[1].includes('pinggy') ? match[1] : (match[2] || 'a.pinggy.io');
+            const p = match[2] && !match[1].includes('pinggy') ? match[1] : match[2];
+            const sshCmd = `ssh root@${host} -p ${p}`;
+            console.log(`[Pinggy TCP SSH Active for ${name}]:`, sshCmd);
+            this.tunnels[`${name}_pinggy_tcp`] = child;
+            resolve({ command: sshCmd, host, port: p });
+          }
+        } else {
+          const match = text.match(/https?:\/\/[a-z0-9\-\.]+\.a?\.?pinggy\.(link|io)/i);
+          if (match && !resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            this.tunnels[`${name}_pinggy_http`] = child;
+            resolve(match[0]);
+          }
+        }
+      };
+
+      child.stdout.on('data', handleData);
+      child.stderr.on('data', handleData);
+      child.on('error', () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(null);
+        }
+      });
+      child.on('exit', () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(null);
+        }
+      });
+    });
+  }
+
+  // 4. LocalTunnel HTTP Manager
+  async createLocalTunnel(name, port) {
+    try {
+      const localtunnel = require('localtunnel');
+      const lt = await localtunnel({ port });
+      if (lt && lt.url) {
+        this.tunnels[`${name}_lt`] = lt;
+        lt.on('error', () => {});
+        return lt.url;
+      }
+    } catch {}
+    return null;
+  }
+
   async createPublicTunnel(name, webPort) {
+    // 1. Try Cloudflare Worker Bridge
+    if (config.proxyUrl) {
+      try {
+        const workerUrl = this.createWorkerBridge(name);
+        if (workerUrl) return workerUrl;
+      } catch {}
+    }
+
+    // 2. Try Ngrok HTTP
     if (config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN) {
       try {
         const ngrokUrl = await this.createNgrokTunnel(name, webPort, 'http');
         if (ngrokUrl) return ngrokUrl;
       } catch {}
     }
+
+    // 3. Try Pinggy HTTP
+    try {
+      const pinggyUrl = await this.createPinggyTunnel(name, webPort, 'http');
+      if (pinggyUrl) return pinggyUrl;
+    } catch {}
+
+    // 4. Try LocalTunnel
+    try {
+      const ltUrl = await this.createLocalTunnel(name, webPort);
+      if (ltUrl) return ltUrl;
+    } catch {}
+
     return this.getWebTerminalUrl(webPort);
   }
 
   async createPublicSsh(name, sshPort) {
+    // 1. Try Ngrok TCP
     if (config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN) {
       try {
         const ngrokSsh = await this.createNgrokTunnel(name, sshPort, 'tcp');
         if (ngrokSsh && ngrokSsh.command) return ngrokSsh.command;
       } catch {}
     }
+
+    // 2. Try Pinggy TCP
+    try {
+      const pinggySsh = await this.createPinggyTunnel(name, sshPort, 'tcp');
+      if (pinggySsh && pinggySsh.command) return pinggySsh.command;
+    } catch {}
+
+    // 3. Fallback to Host IP
     const hostIp = this.getHostPublicIP();
     return `ssh root@${hostIp} -p ${sshPort}`;
   }
@@ -315,6 +507,21 @@ class ContainerManager {
       this.run(`${this.lxcBin} stop ${name} --force`);
     }
 
+    if (this.workerBridges[name]) {
+      if (this.workerBridges[name].pingInterval) clearInterval(this.workerBridges[name].pingInterval);
+      try { this.workerBridges[name].ws.close(); } catch {}
+      try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
+      delete this.workerBridges[name];
+    }
+
+    for (const key of Object.keys(this.tunnels)) {
+      if (key.startsWith(name)) {
+        try { this.tunnels[key].kill(); } catch {}
+        try { this.tunnels[key].close(); } catch {}
+        delete this.tunnels[key];
+      }
+    }
+
     if (this.ngrokListeners[`${name}_tcp`]) {
       try { this.ngrokListeners[`${name}_tcp`].close(); } catch {}
       delete this.ngrokListeners[`${name}_tcp`];
@@ -336,6 +543,21 @@ class ContainerManager {
       this.run(`${this.dockerBin} rm -f ${name}`);
     } else {
       this.run(`${this.lxcBin} delete -f ${name}`);
+    }
+
+    if (this.workerBridges[name]) {
+      if (this.workerBridges[name].pingInterval) clearInterval(this.workerBridges[name].pingInterval);
+      try { this.workerBridges[name].ws.close(); } catch {}
+      try { this.workerBridges[name].proc.kill('SIGKILL'); } catch {}
+      delete this.workerBridges[name];
+    }
+
+    for (const key of Object.keys(this.tunnels)) {
+      if (key.startsWith(name)) {
+        try { this.tunnels[key].kill(); } catch {}
+        try { this.tunnels[key].close(); } catch {}
+        delete this.tunnels[key];
+      }
     }
 
     if (this.ngrokListeners[`${name}_tcp`]) {
