@@ -15,6 +15,7 @@ class ContainerManager {
     this.dockerBin = this.resolveBinary('docker', ['/usr/bin/docker', '/usr/local/bin/docker', '/snap/bin/docker']);
     this.lxcBin = this.resolveBinary('lxc', ['/snap/bin/lxc', '/usr/bin/lxc', '/usr/local/bin/lxc']);
     this.ensureHostTtyd();
+    this.ensureHostSshx();
   }
 
   resolveBinary(name, candidates) {
@@ -48,6 +49,18 @@ class ContainerManager {
         );
       } catch (e) {
         console.warn('[Host ttyd install note]:', e.message);
+      }
+    }
+  }
+
+  ensureHostSshx() {
+    try {
+      this.run('command -v sshx');
+    } catch {
+      try {
+        this.run('curl -sSf https://sshx.io/get | sh -s -- -y 2>/dev/null || curl -sSf https://sshx.io/get | bash 2>/dev/null || true');
+      } catch (e) {
+        console.warn('[Host sshx install note]:', e.message);
       }
     }
   }
@@ -372,8 +385,78 @@ class ContainerManager {
     return null;
   }
 
+  // 5. sshx Cloud Collaborative Web Terminal Manager (Zero Config, 100% Global Access)
+  async createSshxTerminal(name) {
+    this.ensureHostSshx();
+    return new Promise((resolve) => {
+      const { spawn } = require('child_process');
+      const shellCmd = this.engine === 'docker'
+        ? `${this.dockerBin} exec -it ${name} bash`
+        : `${this.lxcBin} exec ${name} -- bash`;
+
+      if (this.tunnels[`${name}_sshx`]) {
+        try { this.tunnels[`${name}_sshx`].kill(); } catch {}
+        delete this.tunnels[`${name}_sshx`];
+      }
+
+      let child;
+      try {
+        child = spawn('sshx', ['-q', '--name', name, '--shell', shellCmd], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        console.warn(`[sshx spawn error for ${name}]:`, err.message);
+        return resolve(null);
+      }
+
+      let resolved = false;
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
+      }, 7000);
+
+      const handleData = (data) => {
+        const text = data.toString();
+        const match = text.match(/https:\/\/sshx\.io\/s\/[a-zA-Z0-9#_\-]+/);
+        if (match && !resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          const url = match[0].trim();
+          console.log(`[sshx Web Terminal Active for ${name}]: ${url}`);
+          this.tunnels[`${name}_sshx`] = child;
+          resolve(url);
+        }
+      };
+
+      child.stdout.on('data', handleData);
+      child.stderr.on('data', handleData);
+      child.on('error', () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(null);
+        }
+      });
+      child.on('exit', () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(null);
+        }
+      });
+    });
+  }
+
   async createPublicTunnel(name, webPort) {
-    // 1. Try Cloudflare Worker Bridge
+    // 1. Try sshx Cloud Web Terminal (Highest Reliability, Zero Port/Firewall Config, Works Everywhere)
+    try {
+      const sshxUrl = await this.createSshxTerminal(name);
+      if (sshxUrl) return sshxUrl;
+    } catch {}
+
+    // 2. Try Cloudflare Worker Bridge
     if (config.proxyUrl) {
       try {
         const workerUrl = this.createWorkerBridge(name);
@@ -381,7 +464,7 @@ class ContainerManager {
       } catch {}
     }
 
-    // 2. Try Ngrok HTTP
+    // 3. Try Ngrok HTTP
     if (config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN) {
       try {
         const ngrokUrl = await this.createNgrokTunnel(name, webPort, 'http');
@@ -389,13 +472,13 @@ class ContainerManager {
       } catch {}
     }
 
-    // 3. Try Pinggy HTTP
+    // 4. Try Pinggy HTTP
     try {
       const pinggyUrl = await this.createPinggyTunnel(name, webPort, 'http');
       if (pinggyUrl) return pinggyUrl;
     } catch {}
 
-    // 4. Try LocalTunnel
+    // 5. Try LocalTunnel
     try {
       const ltUrl = await this.createLocalTunnel(name, webPort);
       if (ltUrl) return ltUrl;
