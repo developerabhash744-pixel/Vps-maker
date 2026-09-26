@@ -100,16 +100,30 @@ class ContainerManager {
 
   getHostPublicIP() {
     if (config.serverIp) return config.serverIp;
+    if (this.cachedIP) return this.cachedIP;
+
     try {
-      if (this.cachedIP) return this.cachedIP;
       const ip = this.run(
-        'curl -s --connect-timeout 4 https://api.ipify.org || curl -s --connect-timeout 4 https://icanhazip.com || curl -s --connect-timeout 4 https://ifconfig.me'
+        'curl -s4 --connect-timeout 3 https://api.ipify.org || curl -s4 --connect-timeout 3 https://icanhazip.com || curl -s4 --connect-timeout 3 https://checkip.amazonaws.com || curl -s4 --connect-timeout 3 https://ifconfig.me'
       ).trim();
       if (ip && /^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
         this.cachedIP = ip;
         return ip;
       }
     } catch {}
+
+    try {
+      const ifaces = os.networkInterfaces();
+      for (const name of Object.keys(ifaces)) {
+        for (const iface of ifaces[name] || []) {
+          if (iface.family === 'IPv4' && !iface.internal && iface.address !== '127.0.0.1') {
+            this.cachedIP = iface.address;
+            return iface.address;
+          }
+        }
+      }
+    } catch {}
+
     return '127.0.0.1';
   }
 
