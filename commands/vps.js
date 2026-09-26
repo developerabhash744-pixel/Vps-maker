@@ -759,10 +759,11 @@ module.exports = {
         sshCmd = await container.createPublicSsh(name, sshPort);
       } catch {}
 
-      let webLink = vpsRecord.webTerminalUrl || null;
+      let webLink = null;
       try {
         webLink = await container.createWebTerminal(name);
       } catch {}
+      if (!webLink) webLink = vpsRecord.webTerminalUrl || null;
 
       const embed = new EmbedBuilder()
         .setColor('#00FF88')

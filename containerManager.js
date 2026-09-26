@@ -401,7 +401,7 @@ class ContainerManager {
 
       let child;
       try {
-        child = spawn('sshx', ['-q', '--name', name, '--shell', shellCmd], {
+        child = spawn('sshx', ['-q', '--name', name, '--shell', `bash -c "${shellCmd}"`], {
           stdio: ['ignore', 'pipe', 'pipe'],
         });
       } catch (err) {
