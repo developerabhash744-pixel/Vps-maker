@@ -353,7 +353,9 @@ module.exports = {
     // 2. BOOST / INVITES
     // =========================================================================
     if (sub === 'boost') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (!interaction.deferred && !interaction.replied) {
+        try { await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch {}
+      }
       const invitesCount = await fetchUserInvites(interaction.guild, userId);
       const boostInfo = calculateBoostTier(invitesCount);
       const userVPS = db.getUserVPSList(userId);
@@ -411,7 +413,9 @@ module.exports = {
     // 1. CREATE (Free Starter 32GB RAM / 1 Core / 16GB Disk)
     // =========================================================================
     if (sub === 'create') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (!interaction.deferred && !interaction.replied) {
+        try { await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch {}
+      }
 
       const rawName = interaction.options.getString('name').trim().toLowerCase();
       const safeName = rawName.replace(/[^a-z0-9-]/g, '');
