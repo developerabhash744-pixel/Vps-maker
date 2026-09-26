@@ -172,19 +172,6 @@ async function bootstrap() {
     console.log(`📦 Container Backend: ${container.isAvailable() ? `${container.engine} (Connected)` : 'Not detected'}`);
     console.log(`=========================================`);
 
-    // Auto-connect worker bridges for any running containers
-    try {
-      const all = db.getAllVPS();
-      all.forEach((v) => {
-        const live = container.getInfo(v.containerName);
-        if (live && live.status === 'Running') {
-          container.createWorkerBridge(v.containerName);
-        }
-      });
-    } catch (e) {
-      console.warn('[Startup Tunnel Init]:', e.message);
-    }
-
     updatePresence();
     setInterval(updatePresence, 30 * 1000);
 
