@@ -259,6 +259,9 @@ async function bootstrap() {
       if (!command) return;
 
       try {
+        if (!interaction.deferred && !interaction.replied) {
+          try { await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch {}
+        }
         await command.execute(interaction);
       } catch (error) {
         console.error(`[Command Error] /${interaction.commandName}:`, error);

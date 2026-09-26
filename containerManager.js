@@ -263,13 +263,16 @@ class ContainerManager {
 
       const checkUrl = (data) => {
         const text = data.toString();
-        const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/);
-        if (match && !resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          this.cfTunnels[name] = proc;
-          console.log(`[Cloudflared Quick Tunnel Active for ${name}]:`, match[0]);
-          resolve(match[0]);
+        const matches = text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/g);
+        if (matches) {
+          const tunnelUrl = matches.find((u) => !u.includes('api.trycloudflare.com'));
+          if (tunnelUrl && !resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            this.cfTunnels[name] = proc;
+            console.log(`[Cloudflared Quick Tunnel Active for ${name}]:`, tunnelUrl);
+            resolve(tunnelUrl);
+          }
         }
       };
 
