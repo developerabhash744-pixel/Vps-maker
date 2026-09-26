@@ -409,21 +409,57 @@ class ContainerManager {
     });
   }
 
+  async createNgrokTunnel(name, port, proto = 'http') {
+    const token = config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN;
+    if (!token) return null;
+    try {
+      const ngrok = require('@ngrok/ngrok');
+      const options = { addr: port, authtoken: token };
+      if (proto === 'tcp') options.proto = 'tcp';
+      const listener = await ngrok.forward(options);
+      if (listener && listener.url()) {
+        const rawUrl = listener.url();
+        this.ngrokListeners[`${name}_${proto}`] = listener;
+        if (proto === 'tcp') {
+          const clean = rawUrl.replace(/^tcp:\/\//, '');
+          const [host, p] = clean.split(':');
+          const sshCmd = `ssh root@${host} -p ${p}`;
+          console.log(`[Ngrok TCP SSH Active for ${name}]:`, sshCmd);
+          return { command: sshCmd, host, port: p, url: rawUrl };
+        } else {
+          console.log(`[Ngrok HTTP Tunnel Active for ${name}]:`, rawUrl);
+          return rawUrl;
+        }
+      }
+    } catch (e) {
+      console.warn(`[Ngrok ${proto} tunnel error for ${name}]:`, e.message);
+    }
+    return null;
+  }
+
   // 2. Public Tunnel Manager
   async createPublicTunnel(name, webPort) {
-    // 1. Try Pinggy HTTP (over port 443 SSH - works anywhere)
+    // 1. First priority: Ngrok HTTP if token is provided
+    if (config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN) {
+      try {
+        const ngrokUrl = await this.createNgrokTunnel(name, webPort, 'http');
+        if (ngrokUrl) return ngrokUrl;
+      } catch {}
+    }
+
+    // 2. Try Pinggy HTTP (over port 443 SSH)
     try {
       const pinggyUrl = await this.createPinggyTunnel(name, webPort, 'http');
       if (pinggyUrl) return pinggyUrl;
     } catch {}
 
-    // 2. Try Localhost.run (over SSH)
+    // 3. Try Localhost.run (over SSH)
     try {
       const lhrUrl = await this.createLocalhostRunTunnel(name, webPort);
       if (lhrUrl) return lhrUrl;
     } catch {}
 
-    // 3. Try Cloudflare Quick Tunnel (cloudflared)
+    // 4. Try Cloudflare Quick Tunnel (cloudflared)
     try {
       const cfUrl = await this.createCloudflaredTunnel(name, webPort);
       if (cfUrl) return cfUrl;
@@ -431,23 +467,19 @@ class ContainerManager {
       console.warn('[Cloudflared tunnel attempt]:', e.message);
     }
 
-    // 4. Try ngrok if token is provided
-    if (config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN) {
-      try {
-        const ngrok = require('@ngrok/ngrok');
-        const listener = await ngrok.forward({ addr: webPort, authtoken: config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN });
-        if (listener && listener.url()) {
-          this.ngrokListeners[name] = listener;
-          return listener.url();
-        }
-      } catch {}
-    }
-
     return this.getWebTerminalUrl(webPort);
   }
 
   async createPublicSsh(name, sshPort) {
-    // 1. Try Pinggy TCP Reverse Tunnel (public SSH command)
+    // 1. First priority: Ngrok TCP tunnel if token is provided
+    if (config.ngrokAuthToken || process.env.NGROK_AUTHTOKEN) {
+      try {
+        const ngrokSsh = await this.createNgrokTunnel(name, sshPort, 'tcp');
+        if (ngrokSsh && ngrokSsh.command) return ngrokSsh.command;
+      } catch {}
+    }
+
+    // 2. Try Pinggy TCP Reverse Tunnel
     try {
       const pinggySsh = await this.createPinggyTunnel(name, sshPort, 'tcp');
       if (pinggySsh && pinggySsh.command) return pinggySsh.command;
